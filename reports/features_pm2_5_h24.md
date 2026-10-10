@@ -7,7 +7,8 @@ Generated 2026-10-10 by `pipeline/features.py`.
 - Stations: **8**
 - Rows with a known answer: **248,943**
 - Features: **128**
-- Build time: **0.7 min**
+- Rows with forecast weather: **100.0%**
+- Build time: **0.2 min**
 
 ## Persistence baseline
 
@@ -44,21 +45,20 @@ available ahead of time.
 
 | Feature | % present |
 |---|---:|
-| temp_c | 1.7 |
-| humidity_pct | 1.7 |
-| wind_speed_ms | 1.7 |
-| pressure_hpa | 1.7 |
-| precip_mm | 1.7 |
-| boundary_layer_m | 1.7 |
-| rh_lag24 | 89.0 |
-| rh_lag1 | 89.1 |
-| wd_sin_lag24 | 91.7 |
-| wd_cos_lag24 | 91.7 |
+| rh_lag24 | 78.9 |
+| rh_lag1 | 79.0 |
+| bp_lag24 | 88.7 |
+| bp_lag1 | 88.8 |
+| wd_sin_lag24 | 88.8 |
+| wd_cos_lag24 | 88.8 |
+| wd_sin_lag1 | 88.9 |
+| wd_cos_lag1 | 88.9 |
+| at_lag24 | 89.2 |
+| at_lag1 | 89.3 |
+| ws_lag24 | 89.4 |
+| ws_lag1 | 89.5 |
+| boundary_layer_m | 91.6 |
 | neighbour_pm2_5_lag1 | 91.8 |
-| wd_sin_lag1 | 91.8 |
-| wd_cos_lag1 | 91.8 |
-| ws_lag24 | 92.4 |
-| ws_lag1 | 92.4 |
 | o3_lag168 | 95.3 |
 | co_lag168 | 95.5 |
 | o3_lag48 | 95.6 |
@@ -129,8 +129,6 @@ available ahead of time.
 | no2_lag1 | 98.0 |
 | nh3_mean6 | 98.3 |
 | nh3_std6 | 98.3 |
-| bp_lag24 | 98.7 |
-| bp_lag1 | 98.8 |
 | nh3_mean24 | 98.8 |
 | nh3_std24 | 98.8 |
 | pm10_mean6 | 98.9 |
@@ -143,10 +141,8 @@ available ahead of time.
 | so2_std6 | 99.0 |
 | no2_mean24 | 99.3 |
 | no2_std24 | 99.3 |
-| at_lag24 | 99.3 |
 | nh3_mean168 | 99.3 |
 | nh3_std168 | 99.3 |
-| at_lag1 | 99.4 |
 | no2_mean168 | 99.5 |
 | no2_std168 | 99.5 |
 | pm10_mean24 | 99.5 |
@@ -165,6 +161,11 @@ available ahead of time.
 | latitude | 100.0 |
 | longitude | 100.0 |
 | elevation_m | 100.0 |
+| temp_c | 100.0 |
+| humidity_pct | 100.0 |
+| wind_speed_ms | 100.0 |
+| pressure_hpa | 100.0 |
+| precip_mm | 100.0 |
 | hour_sin | 100.0 |
 | hour_cos | 100.0 |
 | doy_sin | 100.0 |

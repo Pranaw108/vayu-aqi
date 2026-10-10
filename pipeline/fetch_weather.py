@@ -32,6 +32,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 import duckdb
+import numpy as np
 import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -46,8 +47,21 @@ DEFAULT_REPORTS = REPO_ROOT / "reports"
 DEFAULT_START = date(2018, 1, 1)
 DEFAULT_END = date(2024, 12, 31)
 
-# Below this, the station is probably matched to the wrong grid cell.
+# Correlation alone is not enough to judge a sensor.
 MIN_TEMPERATURE_CORRELATION = 0.7
+
+# In a place with little seasonal swing — Kerala barely moves all year —
+# correlation is unstable even for a perfect sensor, so there is nothing to
+# judge. Measured: KL07 scores r=0.115 with a station spread of 2.5 C against
+# reanalysis's 2.9 C, which is agreement, not a fault.
+MIN_TEMPERATURE_SPREAD_C = 3.0
+
+# A working sensor should vary about as much as reality does. Far outside this
+# means the sensor is damped or exaggerating, whatever its correlation says.
+SPREAD_RATIO_BOUNDS = (0.7, 1.4)
+
+# A sensor this far off in absolute terms is miscalibrated.
+MAX_MEAN_TEMPERATURE_DIFFERENCE_C = 3.0
 
 log = logging.getLogger("fetch_weather")
 
@@ -108,6 +122,8 @@ def check_spatial_join(data_dir: Path, weather: pd.DataFrame, mapping: pd.DataFr
         )
         if len(merged) < 500:
             continue
+        station_spread = merged["station_temp_c"].std()
+        reanalysis_spread = merged["temp_c"].std()
         rows.append({
             "station_code": code,
             "grid_key": grid_key.iloc[0],
@@ -115,8 +131,36 @@ def check_spatial_join(data_dir: Path, weather: pd.DataFrame, mapping: pd.DataFr
             "temp_correlation": round(merged["station_temp_c"].corr(merged["temp_c"]), 3),
             "humidity_correlation": round(merged["station_humidity_pct"].corr(merged["humidity_pct"]), 3),
             "mean_temp_difference": round((merged["station_temp_c"] - merged["temp_c"]).mean(), 2),
+            "station_spread_c": round(station_spread, 2),
+            "reanalysis_spread_c": round(reanalysis_spread, 2),
+            "spread_ratio": round(station_spread / reanalysis_spread, 2) if reanalysis_spread else np.nan,
         })
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    if not frame.empty:
+        frame["verdict"] = [classify_sensor(row) for row in frame.itertuples()]
+    return frame
+
+
+def classify_sensor(row) -> str:
+    """Judge one station's weather sensor: ok, faulty, or not assessable.
+
+    Correlation on its own gets this wrong both ways, which is why there are
+    three tests rather than one:
+      - too little spread to judge  -> not_assessable, and left alone
+      - spread far from reanalysis  -> faulty, whatever the correlation says
+      - large absolute offset       -> faulty
+    """
+    if not np.isfinite(row.station_spread_c) or row.station_spread_c < MIN_TEMPERATURE_SPREAD_C:
+        return "not_assessable"
+
+    low, high = SPREAD_RATIO_BOUNDS
+    if np.isfinite(row.spread_ratio) and not (low <= row.spread_ratio <= high):
+        return "faulty"
+    if abs(row.mean_temp_difference) > MAX_MEAN_TEMPERATURE_DIFFERENCE_C:
+        return "faulty"
+    if row.temp_correlation < MIN_TEMPERATURE_CORRELATION:
+        return "faulty"
+    return "ok"
 
 
 def write_quarantine(data_dir: Path, joined: pd.DataFrame) -> dict:
@@ -131,16 +175,20 @@ def write_quarantine(data_dir: Path, joined: pd.DataFrame) -> dict:
         "threshold": MIN_TEMPERATURE_CORRELATION,
         "stations_checked": int(len(joined)),
         "note": "Only stations with enough overlapping weather could be checked, so this is the "
-                "known-bad list, not a complete one.",
+                "known-bad list, not a complete one. Stations in 'not_assessable' have too little "
+                "temperature spread for correlation to mean anything (Kerala barely varies all "
+                "year) and are deliberately left alone rather than quarantined on a weak score.",
         "stations": {},
     }
     if not joined.empty:
-        weak = joined[joined["temp_correlation"] < MIN_TEMPERATURE_CORRELATION]
+        weak = joined[joined["verdict"] == "faulty"]
+        quarantine["not_assessable"] = sorted(joined.loc[joined["verdict"] == "not_assessable", "station_code"])
         quarantine["stations"] = {
             row.station_code: {
                 "temp_correlation": float(row.temp_correlation),
                 "humidity_correlation": float(row.humidity_correlation),
                 "mean_temp_difference": float(row.mean_temp_difference),
+                "spread_ratio": float(row.spread_ratio),
                 "hours_compared": int(row.hours_compared),
             }
             for row in weak.itertuples()
