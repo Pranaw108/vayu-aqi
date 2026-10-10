@@ -7,7 +7,7 @@ Generated 2026-10-10 by `pipeline/fetch_weather.py`.
 - Grid cells fetched: **245** (of 245 needed)
 - Hourly rows: **15,035,160**
 - API calls: **0** (free tier allows 10,000/day)
-- Runtime: **0.1 min**
+- Runtime: **0.2 min**
 
 Source: [Open-Meteo](https://open-meteo.com/) ERA5 reanalysis, no API key, non-commercial use.
 

@@ -91,6 +91,14 @@ class FoldResult:
     episode_scores: dict[str, float] = field(default_factory=dict)
 
 
+def summarise_stations(codes: pd.Series) -> str:
+    """Short, unambiguous description of which stations a run used."""
+    unique = sorted(codes.unique())
+    if len(unique) <= 8:
+        return ", ".join(unique)
+    return f"{unique[0]}..{unique[-1]} ({len(unique)} stations)"
+
+
 def score(actual: np.ndarray, predicted: np.ndarray) -> dict[str, float]:
     """MAE and RMSE over the rows where both exist."""
     usable = ~(np.isnan(actual) | np.isnan(predicted))
@@ -219,7 +227,8 @@ def run_fold(frame: pd.DataFrame, feature_names: list[str], fold: int,
 
 
 def build_summary(results: list[FoldResult], target: str, horizon: int, feature_names: list[str],
-                  stations: int, importance: pd.DataFrame, elapsed_min: float) -> str:
+                  stations: int, importance: pd.DataFrame, elapsed_min: float,
+                  station_codes: str = "") -> str:
     def mean_of(name: str, key: str = "mae") -> float:
         values = [r.scores[name][key] for r in results if name in r.scores and np.isfinite(r.scores[name][key])]
         return float(np.mean(values)) if values else float("nan")
@@ -235,6 +244,7 @@ def build_summary(results: list[FoldResult], target: str, horizon: int, feature_
         "",
         f"- Target: **{target}**, **{horizon}** hours ahead",
         f"- Stations: **{stations}** · features: **{len(feature_names)}**",
+        f"- Station codes: `{station_codes}`",
         f"- Rolling-origin folds: **{len(results)}**, {TEST_DAYS} test days each",
         f"- Runtime: **{elapsed_min:.1f} min**",
         "",
@@ -360,6 +370,13 @@ def main(argv: list[str] | None = None) -> int:
 
     frame = pd.read_parquet(features_path).sort_values(["station_code", "hour"]).reset_index(drop=True)
     feature_names = [c for c in frame.columns if c not in NON_FEATURES]
+
+    # Every feature column must be float32, not just the float ones. A single
+    # int column makes pandas upcast the whole matrix to float64 on conversion,
+    # which is what exhausted memory on the 43-station Delhi build.
+    for column in feature_names:
+        frame[column] = pd.to_numeric(frame[column], errors="coerce").astype("float32")
+    log.info("Feature matrix: %.1f GB", frame[feature_names].memory_usage(deep=True).sum() / 2**30)
     log.info("Loaded %s rows, %d features, %d stations",
              f"{len(frame):,}", len(feature_names), frame["station_code"].nunique())
 
@@ -403,7 +420,8 @@ def main(argv: list[str] | None = None) -> int:
     name = f"model_{args.target}_h{args.horizon}.md"
     (args.reports / name).write_text(
         build_summary(results, args.target, args.horizon, feature_names,
-                      frame["station_code"].nunique(), importance, elapsed_min),
+                      frame["station_code"].nunique(), importance, elapsed_min,
+                      station_codes=summarise_stations(frame["station_code"])),
         encoding="utf-8",
     )
 

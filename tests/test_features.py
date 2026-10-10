@@ -173,7 +173,8 @@ def test_leakage_check_flags_a_raw_pollutant_column():
         "pm2_5_lag1": [9.0],      # legitimate
         "pm2_5_mean24": [8.0],    # legitimate
         "hour_sin": [0.0],        # legitimate
-        "temp_c": [20.0],         # forecast, legitimate
+        "fc_temp_c": [20.0],      # forecast for the predicted hour, legitimate
+        "wx_temp_c": [19.0],      # reanalysis at the current hour, legitimate
         "target": [11.0],
     })
     suspect = leakage_check(frame, "pm2_5", 24)
@@ -181,7 +182,8 @@ def test_leakage_check_flags_a_raw_pollutant_column():
     assert "pm2_5_lag1" not in suspect
     assert "pm2_5_mean24" not in suspect
     assert "hour_sin" not in suspect
-    assert "temp_c" not in suspect
+    assert "fc_temp_c" not in suspect
+    assert "wx_temp_c" not in suspect
 
 
 def test_every_lag_horizon_is_built():
@@ -205,9 +207,9 @@ def test_weather_coverage_is_zero_when_the_columns_are_absent():
 
 def test_weather_coverage_counts_rows_with_any_weather():
     frame = pd.DataFrame({
-        "temp_c": [20.0, np.nan, np.nan, 22.0],
-        "wind_speed_ms": [np.nan, np.nan, np.nan, 3.0],
-        "boundary_layer_m": [np.nan] * 4,
+        "fc_temp_c": [20.0, np.nan, np.nan, 22.0],
+        "fc_wind_speed_ms": [np.nan, np.nan, np.nan, 3.0],
+        "fc_boundary_layer_m": [np.nan] * 4,
     })
     assert weather_coverage(frame) == 0.5
 
@@ -218,7 +220,7 @@ def test_thin_weather_is_warned_about(caplog):
     This is the bug it catches: a 1.7%-weather run trained and scored fine while
     being autoregressive only, and nothing said so.
     """
-    frame = pd.DataFrame({"temp_c": [20.0] + [np.nan] * 99})
+    frame = pd.DataFrame({"fc_temp_c": [20.0] + [np.nan] * 99})
     with caplog.at_level("WARNING"):
         coverage = warn_on_thin_weather(frame)
     assert coverage == pytest.approx(0.01)
@@ -226,7 +228,7 @@ def test_thin_weather_is_warned_about(caplog):
 
 
 def test_good_weather_coverage_does_not_warn(caplog):
-    frame = pd.DataFrame({"temp_c": [20.0] * 90 + [np.nan] * 10})
+    frame = pd.DataFrame({"fc_temp_c": [20.0] * 90 + [np.nan] * 10})
     with caplog.at_level("WARNING"):
         warn_on_thin_weather(frame)
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
@@ -245,10 +247,15 @@ def test_quarantined_station_loses_its_local_weather():
         "wd": [90.0, 95.0, 180.0],
         "pm2_5": [100.0, 101.0, 102.0],
     })
-    out = drop_quarantined_sensors(frame.copy(), {"UP09": {"temp_correlation": 0.41}})
+    out = drop_quarantined_sensors(
+        frame.copy(), {"UP09": {"quarantine_columns": ["at", "rh"], "temp_correlation": 0.41}}
+    )
 
     bad = out[out["station_code"] == "UP09"]
-    assert bad[["at", "rh", "ws", "wd"]].isna().all().all()
+    assert bad[["at", "rh"]].isna().all().all()
+    # Wind is not dropped: there is no independent check on it, so dropping it
+    # would discard real data on suspicion rather than on evidence.
+    assert bad["ws"].notna().all()
     # The pollutant readings are still good, so the rows stay.
     assert bad["pm2_5"].notna().all()
     # A healthy station is untouched.
@@ -267,3 +274,44 @@ def test_quarantine_file_is_read(tmp_path):
         '{"stations": {"BR08": {"temp_correlation": 0.095}}}', encoding="utf-8"
     )
     assert "BR08" in load_quarantine(tmp_path)
+
+
+def test_forecast_weather_is_distinguished_from_current_weather():
+    """fc_* and wx_* must both survive the leakage guard, and mean different things.
+
+    Joining weather only at the current hour was a real bug: the model already
+    has today's conditions from its own lagged sensors, so complete weather
+    changed the score by 0.0%. The value is in the hour being predicted.
+    """
+    frame = pd.DataFrame({
+        "station_code": ["X"], "hour": [pd.Timestamp("2024-01-01")],
+        "fc_wind_speed_ms": [5.0],      # forecast for the target hour
+        "wx_wind_speed_ms": [1.0],      # reanalysis now
+        "target": [50.0],
+    })
+    suspect = leakage_check(frame, "pm2_5", 24)
+    assert suspect == []
+
+
+def test_coverage_is_measured_on_the_forecast_columns():
+    """Current-hour weather being present must not mask a missing forecast."""
+    frame = pd.DataFrame({
+        "wx_temp_c": [20.0] * 10,       # present
+        "fc_temp_c": [np.nan] * 10,     # absent — this is what matters
+    })
+    assert weather_coverage(frame) == 0.0
+
+
+def test_only_the_proven_bad_column_is_dropped():
+    """A sound thermometer with a failed hygrometer must keep its temperature."""
+    frame = pd.DataFrame({
+        "station_code": ["WB09", "WB09"],
+        "hour": pd.date_range("2024-01-01", periods=2, freq="h"),
+        "at": [21.0, 21.5],
+        "rh": [100.0, 100.0],
+        "ws": [2.0, 2.1],
+    })
+    out = drop_quarantined_sensors(frame.copy(), {"WB09": {"quarantine_columns": ["rh"]}})
+    assert out["rh"].isna().all()
+    assert out["at"].notna().all()
+    assert out["ws"].notna().all()

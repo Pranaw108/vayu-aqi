@@ -66,8 +66,20 @@ log = logging.getLogger("features")
 
 
 def load_station_hours(con: duckdb.DuckDBPyConnection, data_dir: Path,
-                       station_codes: list[str] | None) -> pd.DataFrame:
-    """Hourly readings joined to that station's grid-cell weather."""
+                       station_codes: list[str] | None, horizon: int = 24) -> pd.DataFrame:
+    """Hourly readings joined to weather, twice, at two different times.
+
+    `fc_*`  weather at the hour being PREDICTED. This is the point of forecast
+            weather: at prediction time a forecast for that hour exists, so
+            using it is legitimate and it is the only genuinely new signal —
+            "wind picks up tomorrow" cannot be read off today's readings.
+    `wx_*`  reanalysis at the current hour. Useful mainly because it fills in
+            for stations whose own sensors are missing or quarantined.
+
+    Joining weather only at the current hour, as this did at first, hands the
+    model something it already has from its own lagged sensors, which is why
+    adding complete weather changed the score by 0.0%.
+    """
     hourly_glob = (data_dir / "hourly" / "**" / "*.parquet").as_posix()
     weather_path = (data_dir / "weather" / "weather_hourly.parquet").as_posix()
     registry_path = (data_dir / "registry.parquet").as_posix()
@@ -80,13 +92,18 @@ def load_station_hours(con: duckdb.DuckDBPyConnection, data_dir: Path,
         params += station_codes
 
     has_weather = Path(weather_path).exists()
-    weather_select = ", ".join(f'w."{c}"' for c in FORECAST_WEATHER) if has_weather else ""
+    weather_select = ""
     weather_join = ""
     if has_weather:
-        weather_select = ", " + weather_select
+        forecast_cols = ", ".join(f'fc."{c}" AS fc_{c}' for c in FORECAST_WEATHER)
+        now_cols = ", ".join(f'wx."{c}" AS wx_{c}' for c in FORECAST_WEATHER)
+        weather_select = f", {forecast_cols}, {now_cols}"
         weather_join = f"""
-            LEFT JOIN read_parquet('{weather_path}') w
-              ON w.grid_key = r.grid_key AND w.timestamp = h.hour
+            LEFT JOIN read_parquet('{weather_path}') fc
+              ON fc.grid_key = r.grid_key
+             AND fc.timestamp = h.hour + INTERVAL {horizon} HOUR
+            LEFT JOIN read_parquet('{weather_path}') wx
+              ON wx.grid_key = r.grid_key AND wx.timestamp = h.hour
         """
 
     return con.execute(f"""
@@ -144,8 +161,13 @@ def drop_quarantined_sensors(frame: pd.DataFrame, quarantined: dict[str, dict]) 
     if not affected.any():
         return frame
 
-    columns = [c for c in (*OBSERVED_WEATHER, "wd") if c in frame.columns]
-    frame.loc[affected, columns] = np.nan
+    # Drop only the columns proven bad for each station. A sound thermometer
+    # with a failed hygrometer should keep its temperature.
+    for station, details in quarantined.items():
+        columns = [c for c in details.get("quarantine_columns", ["at", "rh"]) if c in frame.columns]
+        if not columns:
+            continue
+        frame.loc[frame["station_code"] == station, columns] = np.nan
     log.info("Dropped local weather for %d quarantined station(s) across %s rows: %s",
              frame.loc[affected, "station_code"].nunique(), f"{int(affected.sum()):,}",
              ", ".join(sorted(set(frame.loc[affected, "station_code"]))))
@@ -154,7 +176,7 @@ def drop_quarantined_sensors(frame: pd.DataFrame, quarantined: dict[str, dict]) 
 
 def weather_coverage(frame: pd.DataFrame) -> float:
     """Share of rows that actually have forecast weather. 0 if the columns are absent."""
-    present = [c for c in FORECAST_WEATHER if c in frame.columns]
+    present = [f"fc_{c}" for c in FORECAST_WEATHER if f"fc_{c}" in frame.columns]
     if not present:
         return 0.0
     return float(frame[present].notna().any(axis=1).mean())
@@ -276,12 +298,15 @@ def leakage_check(frame: pd.DataFrame, target: str, horizon: int) -> list[str]:
         "latitude", "longitude", "elevation_m", "readings",
         "hour_sin", "hour_cos", "doy_sin", "doy_cos", "weekday", "is_weekend", "is_burning_season",
         "neighbour_pm2_5_lag1",
-        *FORECAST_WEATHER,
     }
 
     suspect = []
     for column in frame.columns:
         if column in allowed_exact:
+            continue
+        # fc_* is weather at the predicted hour (a forecast exists for it);
+        # wx_* is reanalysis at the current hour. Both are knowable.
+        if column.startswith(("fc_", "wx_")):
             continue
         if column.endswith(allowed_suffixes):
             continue
@@ -294,7 +319,7 @@ def leakage_check(frame: pd.DataFrame, target: str, horizon: int) -> list[str]:
 def build(con: duckdb.DuckDBPyConnection, data_dir: Path, target: str, horizon: int,
           station_codes: list[str] | None) -> tuple[pd.DataFrame, list[str]]:
     """Full feature table for one target and horizon."""
-    frame = load_station_hours(con, data_dir, station_codes)
+    frame = load_station_hours(con, data_dir, station_codes, horizon)
     if frame.empty:
         return frame, []
 
@@ -380,7 +405,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--reports", type=Path, default=DEFAULT_REPORTS)
     p.add_argument("--target", choices=TARGETS, default="pm2_5")
     p.add_argument("--horizon", type=int, default=24, help="Hours ahead to predict (default 24)")
-    p.add_argument("--sample-stations", type=int, help="Use only the first N stations (quick check)")
+    p.add_argument("--stations", nargs="+", metavar="CODE",
+                   help="Use exactly these stations, e.g. --stations DL01 DL26")
+    p.add_argument("--state", help="Use only this state folder, e.g. --state Delhi_NCT")
+    p.add_argument("--sample-stations", type=int,
+                   help="Use a RANDOM sample of N stations. Random, not the first N: station "
+                        "codes are grouped by state, so taking the first N quietly tests one "
+                        "region. The first such run used AP01-AP08 and concluded weather does "
+                        "not help, having tested it where inversions matter least.")
+    p.add_argument("--seed", type=int, default=0, help="Sample seed, so a run can be repeated")
     return p.parse_args(argv)
 
 
@@ -393,9 +426,33 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     registry = pd.read_parquet(args.data / "registry.parquet")
-    codes = registry.loc[registry["is_mappable"], "station_code"].tolist()
-    if args.sample_stations:
-        codes = codes[: args.sample_stations]
+    mappable = registry[registry["is_mappable"]]
+
+    if args.stations:
+        codes = [c for c in args.stations if c in set(mappable["station_code"])]
+        missing = sorted(set(args.stations) - set(codes))
+        if missing:
+            log.warning("Not mappable or not found, skipped: %s", ", ".join(missing))
+    elif args.state:
+        codes = mappable.loc[mappable["state_code"] == args.state, "station_code"].tolist()
+        if not codes:
+            states = ", ".join(sorted(mappable["state_code"].dropna().unique()))
+            log.error("No mappable stations for state %r. Available: %s", args.state, states)
+            return 2
+    elif args.sample_stations:
+        codes = (
+            mappable["station_code"]
+            .sample(min(args.sample_stations, len(mappable)), random_state=args.seed)
+            .tolist()
+        )
+    else:
+        codes = mappable["station_code"].tolist()
+
+    if not codes:
+        log.error("No stations selected")
+        return 2
+    covered = mappable.loc[mappable["station_code"].isin(codes), "state_code"].value_counts()
+    log.info("States covered: %s", ", ".join(f"{s}={n}" for s, n in covered.items()))
 
     con = duckdb.connect()
     log.info("Building features for %s at +%dh over %d stations", args.target, args.horizon, len(codes))

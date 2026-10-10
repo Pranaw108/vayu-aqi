@@ -63,6 +63,17 @@ SPREAD_RATIO_BOUNDS = (0.7, 1.4)
 # A sensor this far off in absolute terms is miscalibrated.
 MAX_MEAN_TEMPERATURE_DIFFERENCE_C = 3.0
 
+# Humidity gets different tests. A fixed offset makes no sense for a quantity
+# that naturally swings 20-90% in a day, so it is judged on physics instead:
+# a hygrometer pinned at saturation while no rain fell is wet or failed, and one
+# reading a true zero does not exist in outdoor air.
+HUMIDITY_SATURATED_PCT = 99.0
+DRY_HOUR_PRECIP_MM = 0.05
+MAX_STUCK_SATURATED_SHARE = 0.02
+MAX_PINNED_ZERO_SHARE = 0.005
+HUMIDITY_SPREAD_RATIO_BOUNDS = (0.6, 1.6)
+MIN_HUMIDITY_SPREAD_PCT = 5.0
+
 log = logging.getLogger("fetch_weather")
 
 
@@ -124,6 +135,13 @@ def check_spatial_join(data_dir: Path, weather: pd.DataFrame, mapping: pd.DataFr
             continue
         station_spread = merged["station_temp_c"].std()
         reanalysis_spread = merged["temp_c"].std()
+
+        humidity = merged["station_humidity_pct"]
+        humidity_spread = humidity.std()
+        reanalysis_humidity_spread = merged["humidity_pct"].std()
+        # A hygrometer at saturation on a dry hour is wet or failed.
+        dry = merged["precip_mm"].fillna(0.0) <= DRY_HOUR_PRECIP_MM
+        stuck = (humidity >= HUMIDITY_SATURATED_PCT) & dry
         rows.append({
             "station_code": code,
             "grid_key": grid_key.iloc[0],
@@ -134,11 +152,40 @@ def check_spatial_join(data_dir: Path, weather: pd.DataFrame, mapping: pd.DataFr
             "station_spread_c": round(station_spread, 2),
             "reanalysis_spread_c": round(reanalysis_spread, 2),
             "spread_ratio": round(station_spread / reanalysis_spread, 2) if reanalysis_spread else np.nan,
+            "humidity_spread_pct": round(humidity_spread, 2),
+            "humidity_spread_ratio": (round(humidity_spread / reanalysis_humidity_spread, 2)
+                                      if reanalysis_humidity_spread else np.nan),
+            "stuck_saturated_share": round(float(stuck.mean()), 4),
+            "pinned_zero_share": round(float((humidity <= 0.5).mean()), 4),
         })
     frame = pd.DataFrame(rows)
     if not frame.empty:
         frame["verdict"] = [classify_sensor(row) for row in frame.itertuples()]
+        frame["humidity_verdict"] = [classify_humidity_sensor(row) for row in frame.itertuples()]
     return frame
+
+
+def classify_humidity_sensor(row) -> str:
+    """Judge a humidity sensor on physics, not on an absolute offset.
+
+    Relative humidity swings 20-90% in a normal day, so "more than 3% out" means
+    nothing — the test that works for temperature is wrong here. Instead:
+      - pinned at saturation while no rain fell  -> wet or failed
+      - reading a true zero                      -> impossible in outdoor air
+      - spread far from reanalysis               -> damped or exaggerating
+    """
+    if not np.isfinite(row.humidity_spread_pct) or row.humidity_spread_pct < MIN_HUMIDITY_SPREAD_PCT:
+        return "not_assessable"
+
+    if np.isfinite(row.stuck_saturated_share) and row.stuck_saturated_share > MAX_STUCK_SATURATED_SHARE:
+        return "faulty"
+    if np.isfinite(row.pinned_zero_share) and row.pinned_zero_share > MAX_PINNED_ZERO_SHARE:
+        return "faulty"
+
+    low, high = HUMIDITY_SPREAD_RATIO_BOUNDS
+    if np.isfinite(row.humidity_spread_ratio) and not (low <= row.humidity_spread_ratio <= high):
+        return "faulty"
+    return "ok"
 
 
 def classify_sensor(row) -> str:
@@ -181,18 +228,33 @@ def write_quarantine(data_dir: Path, joined: pd.DataFrame) -> dict:
         "stations": {},
     }
     if not joined.empty:
-        weak = joined[joined["verdict"] == "faulty"]
-        quarantine["not_assessable"] = sorted(joined.loc[joined["verdict"] == "not_assessable", "station_code"])
-        quarantine["stations"] = {
-            row.station_code: {
+        quarantine["not_assessable"] = {
+            "temperature": sorted(joined.loc[joined["verdict"] == "not_assessable", "station_code"]),
+            "humidity": sorted(joined.loc[joined["humidity_verdict"] == "not_assessable", "station_code"]),
+        }
+        stations: dict[str, dict] = {}
+        for row in joined.itertuples():
+            # Only the proven-bad column is dropped. There is no independent
+            # check on wind or pressure, so dropping those too would discard
+            # real data on suspicion rather than evidence.
+            columns = []
+            if row.verdict == "faulty":
+                columns.append("at")
+            if row.humidity_verdict == "faulty":
+                columns.append("rh")
+            if not columns:
+                continue
+            stations[row.station_code] = {
+                "quarantine_columns": columns,
                 "temp_correlation": float(row.temp_correlation),
-                "humidity_correlation": float(row.humidity_correlation),
                 "mean_temp_difference": float(row.mean_temp_difference),
                 "spread_ratio": float(row.spread_ratio),
+                "humidity_spread_ratio": float(row.humidity_spread_ratio),
+                "stuck_saturated_share": float(row.stuck_saturated_share),
+                "pinned_zero_share": float(row.pinned_zero_share),
                 "hours_compared": int(row.hours_compared),
             }
-            for row in weak.itertuples()
-        }
+        quarantine["stations"] = stations
 
     path = data_dir / "sensor_quarantine.json"
     path.write_text(json.dumps(quarantine, indent=2), encoding="utf-8")
