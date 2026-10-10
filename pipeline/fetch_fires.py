@@ -107,8 +107,11 @@ def combine_chunks(paths: list[Path]) -> pd.DataFrame:
     """
     seen = []
     for path in paths:
-        if path.exists():
-            seen.append(pd.read_parquet(path))
+        if not path.exists():
+            continue
+        chunk = pd.read_parquet(path)
+        if not chunk.empty:
+            seen.append(chunk)
     if not seen:
         return pd.DataFrame()
     return pd.concat(seen, ignore_index=True).drop_duplicates()
@@ -139,8 +142,10 @@ def build_summary(fires: pd.DataFrame, calls: int, elapsed_min: float,
         "",
         "## Detections by month",
         "",
-        "If this data is any use, October and November should dominate — that is the "
-        "stubble-burning season, and it is when Delhi's air collapses.",
+        "Nationally the peak is March and April — forest fires in central and eastern "
+        "India. The stubble-burning signal that drives Delhi's winter air is regional, "
+        "not national: inside the Punjab and Haryana box, November and May dominate. "
+        "A national monthly total is the wrong lens for this project's question.",
         "",
         "| Month | Detections | Total FRP |",
         "|---|---:|---:|",
