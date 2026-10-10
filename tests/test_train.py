@@ -125,3 +125,50 @@ def test_indian_seasons_are_mapped_not_calendar_quarters():
 
 def test_every_month_has_a_season():
     assert {season_of(m) for m in range(1, 13)} == {"winter", "summer", "monsoon", "post-monsoon"}
+
+
+# ------------------------------------------------- selection bias (a real mistake)
+
+def test_an_unbiased_forecast_looks_biased_when_rows_are_chosen_by_outcome():
+    """Encodes the error this project actually made.
+
+    The mechanism matters. A forecast is made first and the outcome then varies
+    around it, so `outcome = forecast + error`. Selecting rows where the OUTCOME
+    came out high therefore selects rows where the error happened to be positive,
+    and the forecast looks too low. Selecting low outcomes does the reverse.
+
+    An earlier report read a 44 ug/m3 "severity gap" on onsets and a "+21.5 calm
+    bias" off exactly these splits, and concluded the model compressed toward the
+    mean. Conditioned on the present instead, its bias is under 2 ug/m3 in every
+    band.
+    """
+    rng = np.random.default_rng(0)
+    # The forecast is the primary quantity; the outcome deviates from it.
+    forecast = rng.lognormal(mean=4.2, sigma=0.7, size=80_000)
+    outcome = forecast + rng.normal(0, 40, size=forecast.size)
+
+    overall_bias = float(np.mean(forecast - outcome))
+    assert abs(overall_bias) < 1.0, "this forecast is unbiased by construction"
+
+    high_outcome = outcome >= 120
+    low_outcome = outcome < 120
+    bias_on_high = float(np.mean(forecast[high_outcome] - outcome[high_outcome]))
+    bias_on_low = float(np.mean(forecast[low_outcome] - outcome[low_outcome]))
+
+    assert bias_on_high < -5.0, "selecting high outcomes must look like under-prediction"
+    assert bias_on_low > 5.0, "selecting low outcomes must look like over-prediction"
+
+
+def test_conditioning_on_the_present_leaves_an_unbiased_predictor_unbiased():
+    """The valid split: condition on what is known when the forecast is made."""
+    rng = np.random.default_rng(1)
+    current = rng.lognormal(mean=4.2, sigma=0.7, size=60_000)
+    truth = current * rng.lognormal(mean=0.0, sigma=0.4, size=current.size)
+    prediction = truth + rng.normal(0, 20, size=truth.size)
+
+    for lo, hi in [(0, 50), (50, 120), (120, 400)]:
+        band = (current >= lo) & (current < hi)
+        if band.sum() < 100:
+            continue
+        bias = float(np.mean(prediction[band] - truth[band]))
+        assert abs(bias) < 2.0, f"band {lo}-{hi} should stay unbiased, got {bias:+.2f}"

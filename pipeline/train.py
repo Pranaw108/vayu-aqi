@@ -100,6 +100,8 @@ class FoldResult:
     season_scores: dict[str, dict[str, float]] = field(default_factory=dict)
     episode_scores: dict[str, float] = field(default_factory=dict)
     transition_scores: dict[str, dict[str, float]] = field(default_factory=dict)
+    present_scores: dict[str, dict[str, float]] = field(default_factory=dict)
+    onset_detection: dict[str, float] = field(default_factory=dict)
 
 
 def summarise_stations(codes: pd.Series) -> str:
@@ -248,6 +250,32 @@ def run_fold(frame: pd.DataFrame, feature_names: list[str], fold: int,
             "mean_predicted": float(np.nanmean(predictions[0.5][mask])),
         }
 
+    # Conditioned only on what is known at prediction time. These are the rows a
+    # conclusion may rest on; anything split by the OUTCOME cannot carry one.
+    for name, mask in {"all": np.ones_like(actual, dtype=bool),
+                       "calm_now": current < EPISODE_THRESHOLD,
+                       "elevated_now": current >= EPISODE_THRESHOLD}.items():
+        if mask.sum() < 20:
+            continue
+        result.present_scores[name] = {
+            "lightgbm": score(actual[mask], predictions[0.5][mask])["mae"],
+            "persistence": score(actual[mask], current[mask])["mae"],
+            "n": int(mask.sum()),
+        }
+
+    # Detection is a recall question, so using the outcome as a LABEL is fine —
+    # that is different from using it to select rows and then measuring bias.
+    calm_now = current < EPISODE_THRESHOLD
+    true_onset = calm_now & (actual >= EPISODE_THRESHOLD)
+    called = calm_now & (predictions[0.5] >= EPISODE_THRESHOLD)
+    if true_onset.sum() >= 20:
+        hits = int((true_onset & called).sum())
+        result.onset_detection = {
+            "true_onsets": int(true_onset.sum()),
+            "recall": hits / max(int(true_onset.sum()), 1),
+            "precision": hits / max(int(called.sum()), 1),
+        }
+
     episode = actual >= EPISODE_THRESHOLD
     if episode.any():
         result.episode_scores = {
@@ -361,14 +389,61 @@ def build_summary(results: list[FoldResult], target: str, horizon: int, feature_
     lines.append("")
 
     lines += [
-        "## What the model is actually good at",
+        "## Performance by what was knowable at prediction time",
         "",
-        "One episode number hides a lot. Beating persistence *during* an episode can",
-        "just mean predicting decay; forecasting the **onset** is the hard part and the",
-        "part the service needs.",
+        "These splits use only the current reading, so a conclusion can rest on them.",
         "",
-        "| Transition | Rows | Persistence MAE | Model MAE | Skill | Mean actual | Mean predicted |",
-        "|---|---:|---:|---:|---:|---:|---:|",
+        "| Conditioned on | Rows | Persistence MAE | Model MAE | Skill |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    present: dict[str, list[dict]] = {}
+    for r in results:
+        for name, s in r.present_scores.items():
+            present.setdefault(name, []).append(s)
+    labels = {"all": "all hours", "calm_now": f"calm now (< {EPISODE_THRESHOLD:.0f})",
+              "elevated_now": f"elevated now (>= {EPISODE_THRESHOLD:.0f})"}
+    for name, label in labels.items():
+        entries = present.get(name)
+        if not entries:
+            continue
+        p_mae = float(np.nanmean([e["persistence"] for e in entries]))
+        m_mae = float(np.nanmean([e["lightgbm"] for e in entries]))
+        n = sum(e["n"] for e in entries)
+        lines.append(f"| {label} | {n:,} | {p_mae:.1f} | {m_mae:.1f} | {skill(m_mae, p_mae):+.1f}% |")
+    lines.append("")
+
+    detections = [r.onset_detection for r in results if r.onset_detection]
+    if detections:
+        recall = float(np.nanmean([d["recall"] for d in detections]))
+        precision = float(np.nanmean([d["precision"] for d in detections]))
+        total = sum(d["true_onsets"] for d in detections)
+        lines += [
+            "### Episode onset detection",
+            "",
+            "Recall is a legitimate use of the outcome, because here it is the label "
+            "rather than a filter on which rows get measured.",
+            "",
+            f"- True onsets in the test windows: **{total:,}**",
+            f"- Model recall: **{100 * recall:.1f}%** · precision: **{100 * precision:.1f}%**",
+            "- Persistence recall: **0%** — it cannot call an onset by construction",
+            "",
+            "Raising recall is the clearest remaining job, and it is a detection problem "
+            "rather than a calibration one.",
+            "",
+        ]
+
+    lines += [
+        "## Transitions (diagnostic only — do NOT read bias from these)",
+        "",
+        "> These rows are selected **by the outcome**, so they cannot show whether the",
+        "> model is biased. An unbiased model always looks like it under-predicts rows",
+        "> chosen for having a high outcome and over-predicts rows chosen for a low one.",
+        "> An earlier version of this report drew a bias conclusion from exactly these",
+        "> numbers and it was wrong. They are kept because the error *magnitudes* are",
+        "> still useful for sizing the problem.",
+        "",
+        "| Transition | Rows | Persistence MAE | Model MAE |",
+        "|---|---:|---:|---:|",
     ]
     transitions: dict[str, list[dict]] = {}
     for r in results:
@@ -378,38 +453,12 @@ def build_summary(results: list[FoldResult], target: str, horizon: int, feature_
         entries = transitions.get(name)
         if not entries:
             continue
-        p = float(np.nanmean([e["persistence"] for e in entries]))
-        m = float(np.nanmean([e["lightgbm"] for e in entries]))
+        p_mae = float(np.nanmean([e["persistence"] for e in entries]))
+        m_mae = float(np.nanmean([e["lightgbm"] for e in entries]))
         n = sum(e["n"] for e in entries)
-        actual_mean = float(np.nanmean([e["mean_actual"] for e in entries]))
-        predicted_mean = float(np.nanmean([e["mean_predicted"] for e in entries]))
-        label = TRANSITIONS[name].format(horizon=horizon)
-        lines.append(f"| **{name}** — {label} | {n:,} | {p:.1f} | {m:.1f} | {skill(m, p):+.1f}% "
-                     f"| {actual_mean:.1f} | {predicted_mean:.1f} |")
+        lines.append(f"| {name} — {TRANSITIONS[name].format(horizon=horizon)} | {n:,} "
+                     f"| {p_mae:.1f} | {m_mae:.1f} |")
     lines.append("")
-    if "calm" in transitions:
-        calm = transitions["calm"]
-        calm_skill = skill(float(np.nanmean([e["lightgbm"] for e in calm])),
-                           float(np.nanmean([e["persistence"] for e in calm])))
-        if calm_skill < 0:
-            lines += [
-                f"Note the **calm** row: on quiet days the model is {abs(calm_skill):.1f}% *worse*",
-                "than simply repeating the current value. That is a reasonable trade — accuracy",
-                "where it matters — but it points at serving persistence when conditions are calm",
-                "and stable, and the model when they are not.",
-                "",
-            ]
-    if "onset" in transitions:
-        onset = transitions["onset"]
-        actual_mean = float(np.nanmean([e["mean_actual"] for e in onset]))
-        predicted_mean = float(np.nanmean([e["mean_predicted"] for e in onset]))
-        if predicted_mean < actual_mean * 0.9:
-            lines += [
-                f"On onset hours the model predicts **{predicted_mean:.0f}** on average against an",
-                f"actual **{actual_mean:.0f}**. It detects that something is coming but understates",
-                "how bad, which matters for a health warning. Fire data is the missing cause.",
-                "",
-            ]
 
     lines += [
         "## What the model leans on",
