@@ -1,14 +1,14 @@
 # Features — pm2_5, +24h (MD-01)
 
-Generated 2026-10-10 by `pipeline/features.py`.
+Generated 2026-10-11 by `pipeline/features.py`.
 
 - Target: **pm2_5**, **24** hours ahead
 - Training window starts: **2018-01-01**
 - Stations: **43**
 - Rows with a known answer: **2,128,147**
-- Features: **140**
+- Features: **134**
 - Rows with forecast weather: **100.0%**
-- Build time: **2.0 min**
+- Build time: **1.7 min**
 
 ## Persistence baseline
 
@@ -179,9 +179,3 @@ available ahead of time.
 | weekday | 100.0 |
 | is_weekend | 100.0 |
 | is_burning_season | 100.0 |
-| fire_count_upwind | 100.0 |
-| fire_count_100_300km | 100.0 |
-| fire_frp_100_300km | 100.0 |
-| fire_count_300_500km | 100.0 |
-| fire_count_upwind_d1 | 100.0 |
-| fire_count_100_300km_d1 | 100.0 |

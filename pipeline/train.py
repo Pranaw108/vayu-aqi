@@ -489,6 +489,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--target", default="pm2_5")
     p.add_argument("--horizon", type=int, default=24)
     p.add_argument("--folds", type=int, default=12, help="Rolling-origin folds (default 12)")
+    p.add_argument("--tag", default="",
+                   help="Label for this configuration. Without it, each run overwrites the last "
+                        "run's models and report, which already cost one comparison")
     return p.parse_args(argv)
 
 
@@ -539,7 +542,8 @@ def main(argv: list[str] | None = None) -> int:
 
     # Keep the newest fold's models: they saw the most data.
     newest = results[-1].models  # type: ignore[attr-defined]
-    model_dir = args.data / "models" / f"{args.target}_h{args.horizon}"
+    suffix = f"_{args.tag}" if args.tag else ""
+    model_dir = args.data / "models" / f"{args.target}_h{args.horizon}{suffix}"
     model_dir.mkdir(parents=True, exist_ok=True)
     for quantile, booster in newest.items():
         booster.save_model(str(model_dir / f"model_p{int(quantile * 100)}.txt"))
@@ -551,7 +555,7 @@ def main(argv: list[str] | None = None) -> int:
     }).sort_values("gain", ascending=False)
 
     args.reports.mkdir(parents=True, exist_ok=True)
-    name = f"model_{args.target}_h{args.horizon}.md"
+    name = f"model_{args.target}_h{args.horizon}{suffix}.md"
     (args.reports / name).write_text(
         build_summary(results, args.target, args.horizon, feature_names,
                       frame["station_code"].nunique(), importance, elapsed_min,
