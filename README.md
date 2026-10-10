@@ -64,11 +64,77 @@ hands them to `api/aqi.py`, so the CPCB rules have one implementation.
 
 Both scripts write a markdown report to `reports/`. Read those rather than re-running.
 
-## Data sources
+## Datasets
+
+**No data is redistributed in this repository.** `data/` is gitignored — the raw archive is
+6.5 GB and the curated Parquet 2.9 GB. Get the data from the sources below and point
+`VAYU_RAW_ROOT` at it.
+
+### What the project reads
+
+| File(s) | What it is | Rows |
+|---|---|---|
+| `<state>/<CODE>.csv` × 546 | Station readings at 15-minute resolution, 2009–2024. CPCB CAAQMS format: PM2.5, PM10, NO, NO₂, NOx, NH₃, SO₂, CO, O₃, plus weather (temp, humidity, wind, pressure) and BTX volatiles | 71,862,029 |
+| `stations.csv` | Station registry: code, city, state, PIN, latitude, longitude, elevation, and three derived terrain features | 553 |
+| `IndiaPopularCity.csv` | Daily city-level pollutants **with a published AQI and category** — used only to cross-check the AQI engine | 25,555 |
+
+### Where this data comes from
+
+**Station readings — Central Pollution Control Board (CPCB), India.** The national
+Continuous Ambient Air Quality Monitoring Station network. Official access points:
+
+- [CPCB CCR portal](https://app.cpcbccr.com/ccr/) — advance search, downloadable per station
+  and pollutant. Note the portal limits a 15-minute request to roughly one week per station,
+  so assembling a multi-year, all-station archive means many requests.
+- [Real time AQI on data.gov.in](https://www.data.gov.in/resource/real-time-air-quality-index-various-locations) — free API key, current readings only, no history
+- [OpenAQ](https://openaq.org/) — mirrors Indian CPCB data with a documented API
+
+> **Provenance gap, needs Pranaw to confirm.** The local archive arrived without any source,
+> licence or README file, and its 2009 start predates the CCR portal's usual coverage. It is
+> therefore very likely a compiled redistribution rather than a direct CCR export. If you know
+> where it was downloaded from, record it here — a dataset nobody can trace is a dataset nobody
+> else can reuse.
+>
+> `stations.csv` also carries `elevation_m`, `topo_complexity`, `coastal_proximity` and
+> `valley_factor`, which are **not** CPCB fields. Someone derived them. How, is unrecorded.
+
+**City-level AQI file.** The columns, date range and category labels match
+[Air Quality Data in India (2015–2020)](https://www.kaggle.com/datasets/rohanrao/air-quality-data-in-india)
+by Rohan Rao on Kaggle (its `city_day.csv`). The copy here is a subset: 22 cities and 25,555 rows
+against the original's 26 cities and 29,531 rows, and it ends 2020-04-10 rather than July 2020.
+Check the licence on the dataset page before reusing it.
+
+### Known problems in the source data
+
+Measured, not assumed — see `reports/` for the full numbers.
+
+| Problem | Scale | How this project handles it |
+|---|---|---|
+| Inconsistent headers | **113** different header layouts across 546 files; column counts 4–22 | Normalised to one 22-column schema |
+| Placeholder coordinates | **84** stations share `22.6876, 79.3704` — the geographic centre of India | Flagged `is_mappable = False`; kept for time-series training, excluded from the map |
+| Agency names instead of cities | ~**106** stations named HSPCB, KSPCB, UPPCB… | Flagged `has_real_city = False`; excluded from city rollups |
+| Impossible PM pairs | **118,325** readings where PM2.5 > PM10 | Both values dropped — one sensor is wrong and you cannot tell which |
+| Sparse early years | Some Delhi stations fall to 28% PM10 coverage pre-2018 | Model training restricted to 2018 onward |
+| Stations stop at different dates | 61 of 546 are more than a day behind the archive's newest hour; one is 8 years behind | `store.cities()` only ranks stations inside a 24-hour comparability window |
+| Published AQI above the scale | **538** rows in the city file exceed the CPCB maximum of 500 (highest: 2049) | Excluded from the cross-check |
+| Wrong CO unit | Ahmedabad's median CO is 17.12 against ~0.89 everywhere else | That city excluded from the cross-check |
+
+
+**Two open items that are not yet fixed:**
+
+- **KA06 "Bengaluru East City Corporation" looks faulty** and currently ranks first nationally
+  in `store.cities()`. Its lifetime mean PM2.5 is 118 and its December mean 215 — far above what
+  Bengaluru actually experiences — and its lifetime maximum is exactly 1000.0, which looks like a
+  sensor ceiling rather than a reading. Not excluded yet: one suspect station is not proof, and
+  silently dropping a station is worse than showing it. Needs a station-level plausibility check
+  against regional peers **before any ranking is published**.
+- **The terrain features in `stations.csv` are unexplained.** Until someone can say how they were
+  derived, treat them as untrusted inputs to any model.
+
+### Live sources (used at runtime, not for training)
 
 | Source | Role | Licence note |
 |---|---|---|
-| CPCB archive (local) | Training corpus, 2009–2024 | Government open data |
 | [CPCB via data.gov.in](https://www.data.gov.in/resource/real-time-air-quality-index-various-locations) | Primary live feed | Free API key |
 | [OpenAQ](https://docs.openaq.org/) | Failover live feed | Free API key, 60/min |
 | [Open-Meteo](https://open-meteo.com/en/docs/air-quality-api) | Forecast weather covariates | **Non-commercial only** |
@@ -77,15 +143,10 @@ Both scripts write a markdown report to `reports/`. Read those rather than re-ru
 This project is non-commercial. Two of the four APIs above would need paid or negotiated
 licences if that ever changed.
 
-## Known data defects (handled, not hidden)
+### Citing this
 
-- **84 stations** share one coordinate — the geographic centre of India. Flagged
-  `is_mappable = False`. Still usable for per-station time-series training.
-- **106 stations** have a pollution control board acronym (HSPCB, KSPCB, …) where the city
-  name should be. Flagged `has_real_city = False`; excluded from city rollups.
-- **113 different header layouts** across the 546 raw files. Normalised to one schema.
-- **Pre-2018 data is sparse** — some Delhi stations drop to 28% PM10 coverage. Model
-  training is restricted to 2018 onward.
+If the station archive helps you, cite CPCB as the originating authority. For the city file,
+cite Rohan Rao's Kaggle dataset as well.
 
 ## Non-negotiables
 
