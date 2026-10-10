@@ -27,6 +27,8 @@ from pipeline.features import (  # noqa: E402
     add_target,
     build,
     leakage_check,
+    warn_on_thin_weather,
+    weather_coverage,
 )
 
 DATA = REPO_ROOT / "data"
@@ -190,3 +192,39 @@ def test_every_lag_horizon_is_built():
     out = add_history_features(frame.copy())
     for lag in LAG_HOURS:
         assert f"pm2_5_lag{lag}" in out.columns
+
+
+# ----------------------------------------------------------------- weather guard
+
+def test_weather_coverage_is_zero_when_the_columns_are_absent():
+    frame = pd.DataFrame({"station_code": ["X"], "hour": [pd.Timestamp("2024-01-01")]})
+    assert weather_coverage(frame) == 0.0
+
+
+def test_weather_coverage_counts_rows_with_any_weather():
+    frame = pd.DataFrame({
+        "temp_c": [20.0, np.nan, np.nan, 22.0],
+        "wind_speed_ms": [np.nan, np.nan, np.nan, 3.0],
+        "boundary_layer_m": [np.nan] * 4,
+    })
+    assert weather_coverage(frame) == 0.5
+
+
+def test_thin_weather_is_warned_about(caplog):
+    """A near-empty weather join must be loud, not silent.
+
+    This is the bug it catches: a 1.7%-weather run trained and scored fine while
+    being autoregressive only, and nothing said so.
+    """
+    frame = pd.DataFrame({"temp_c": [20.0] + [np.nan] * 99})
+    with caplog.at_level("WARNING"):
+        coverage = warn_on_thin_weather(frame)
+    assert coverage == pytest.approx(0.01)
+    assert any("autoregressive" in record.message for record in caplog.records)
+
+
+def test_good_weather_coverage_does_not_warn(caplog):
+    frame = pd.DataFrame({"temp_c": [20.0] * 90 + [np.nan] * 10})
+    with caplog.at_level("WARNING"):
+        warn_on_thin_weather(frame)
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]

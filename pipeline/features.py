@@ -55,6 +55,9 @@ INPUT_POLLUTANTS = ("pm2_5", "pm10", "no2", "so2", "nh3", "co", "o3")
 OBSERVED_WEATHER = ("at", "rh", "ws", "bp")
 FORECAST_WEATHER = ("temp_c", "humidity_pct", "wind_speed_ms", "pressure_hpa", "precip_mm", "boundary_layer_m")
 
+# Below this share of rows, forecast weather is too thin to learn dispersion from.
+MIN_WEATHER_COVERAGE = 0.5
+
 # Stubble burning in Punjab and Haryana drives the worst north-Indian episodes.
 BURNING_SEASON_MONTHS = (10, 11)
 
@@ -117,6 +120,34 @@ def add_calendar_features(frame: pd.DataFrame) -> pd.DataFrame:
     frame["is_weekend"] = (hours.dt.weekday >= 5).astype("int8")
     frame["is_burning_season"] = hours.dt.month.isin(BURNING_SEASON_MONTHS).astype("int8")
     return frame
+
+
+def weather_coverage(frame: pd.DataFrame) -> float:
+    """Share of rows that actually have forecast weather. 0 if the columns are absent."""
+    present = [c for c in FORECAST_WEATHER if c in frame.columns]
+    if not present:
+        return 0.0
+    return float(frame[present].notna().any(axis=1).mean())
+
+
+def warn_on_thin_weather(frame: pd.DataFrame) -> float:
+    """Say loudly when weather is mostly missing.
+
+    A model built this way is autoregressive only: it has no way to know that
+    the wind is about to pick up, which is most of why pollution clears. It
+    still trains and still scores, so without this warning the gap is invisible.
+    """
+    coverage = weather_coverage(frame)
+    if coverage < MIN_WEATHER_COVERAGE:
+        log.warning("=" * 72)
+        log.warning("Forecast weather present on only %.1f%% of rows (want >=%.0f%%).",
+                    100 * coverage, 100 * MIN_WEATHER_COVERAGE)
+        log.warning("The model will be autoregressive only and will not learn dispersion.")
+        log.warning("Run pipeline/fetch_weather.py to completion first.")
+        log.warning("=" * 72)
+    else:
+        log.info("Forecast weather present on %.1f%% of rows", 100 * coverage)
+    return coverage
 
 
 def add_history_features(frame: pd.DataFrame, station_column: str = "station_code") -> pd.DataFrame:
@@ -238,6 +269,7 @@ def build(con: duckdb.DuckDBPyConnection, data_dir: Path, target: str, horizon: 
         return frame, []
 
     registry = pd.read_parquet(data_dir / "registry.parquet")
+    warn_on_thin_weather(frame)
     frame = add_calendar_features(frame)
     frame = add_history_features(frame)
     frame = add_neighbour_features(frame, registry)
@@ -258,6 +290,12 @@ def build_summary(frame: pd.DataFrame, dropped: list[str], target: str, horizon:
                        if c not in ("station_code", "hour", "target", "target_hour", "baseline_persistence")]
     error = (frame["baseline_persistence"] - frame["target"]).abs()
 
+    coverage = weather_coverage(frame)
+    weather_note = (
+        f"**{100 * coverage:.1f}%**"
+        if coverage >= MIN_WEATHER_COVERAGE
+        else f"**{100 * coverage:.1f}% — too thin; this model cannot learn dispersion**"
+    )
     lines = [
         f"# Features — {target}, +{horizon}h (MD-01)",
         "",
@@ -268,6 +306,7 @@ def build_summary(frame: pd.DataFrame, dropped: list[str], target: str, horizon:
         f"- Stations: **{stations}**",
         f"- Rows with a known answer: **{len(frame):,}**",
         f"- Features: **{len(feature_columns)}**",
+        f"- Rows with forecast weather: {weather_note}",
         f"- Build time: **{elapsed_min:.1f} min**",
         "",
         "## Persistence baseline",
