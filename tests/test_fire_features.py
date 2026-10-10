@@ -333,3 +333,38 @@ def test_normalise_handles_a_missing_column():
 def test_low_confidence_detections_are_dropped():
     frame = pd.DataFrame({"confidence": ["l", "n", "h"], "frp": [1.0, 2.0, 3.0]})
     assert len(drop_low_confidence(frame)) == 2
+
+
+def test_cache_path_is_stable_for_the_same_chunk():
+    """fetch_all needs to find a cached chunk without refetching it."""
+    from datetime import date as d
+    client = FirmsClient("/tmp/firms-test", map_key="x")
+    first = client.cache_path(d(2024, 11, 5), 5)
+    second = client.cache_path(d(2024, 11, 5), 5)
+    assert first == second
+    assert client.cache_path(d(2024, 11, 10), 5) != first
+
+
+def test_combine_chunks_drops_duplicate_detections(tmp_path):
+    """Chunk edges overlap, so the same fire can be written twice."""
+    from pipeline.fetch_fires import combine_chunks
+
+    row = {"latitude": [30.9], "longitude": [75.8], "acq_date": pd.to_datetime(["2024-11-05"]),
+           "frp": [10.0], "confidence": ["n"], "daynight": ["D"]}
+    first = tmp_path / "a.parquet"
+    second = tmp_path / "b.parquet"
+    pd.DataFrame(row).to_parquet(first, index=False)
+    pd.DataFrame(row).to_parquet(second, index=False)
+
+    assert len(combine_chunks([first, second])) == 1
+
+
+def test_combine_chunks_skips_files_that_are_not_there(tmp_path):
+    """A failed chunk leaves no file, and that must not stop the rest combining."""
+    from pipeline.fetch_fires import combine_chunks
+
+    present = tmp_path / "present.parquet"
+    pd.DataFrame({"latitude": [30.9], "longitude": [75.8],
+                  "acq_date": pd.to_datetime(["2024-11-05"]), "frp": [10.0]}).to_parquet(present, index=False)
+    out = combine_chunks([present, tmp_path / "missing.parquet"])
+    assert len(out) == 1

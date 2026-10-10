@@ -69,28 +69,49 @@ def load_env_key(repo_root: Path) -> None:
             return
 
 
-def fetch_all(client: FirmsClient, bbox: BoundingBox, start: date, end: date) -> pd.DataFrame:
+def fetch_all(client: FirmsClient, bbox: BoundingBox, start: date, end: date) -> list[Path]:
+    """Make sure every chunk is on disk, and return the cache files.
+
+    Nothing is held in memory. `fetch_chunk` already writes each chunk to the
+    cache, so keeping the frames as well was pure waste — an earlier version did
+    and the process was killed at chunk 225 holding 3.1M detections, with the
+    final concat still to come.
+    """
     chunks = date_chunks(start, end)
     log.info("Fetching %d chunks of up to 5 days each, %s to %s", len(chunks), start, end)
 
-    frames = []
+    paths: list[Path] = []
+    failed = 0
     for n, (chunk_start, days) in enumerate(chunks, 1):
         try:
-            frames.append(client.fetch_chunk(bbox, chunk_start, days))
+            client.fetch_chunk(bbox, chunk_start, days)
+            paths.append(client.cache_path(chunk_start, days))
         except MissingMapKey:
             raise
         except Exception as error:
             # One bad chunk must not lose the other 500.
+            failed += 1
             log.error("  %s (%dd) failed: %s: %s", chunk_start, days, type(error).__name__, error)
             continue
         if n % 25 == 0 or n == len(chunks):
-            total = sum(len(f) for f in frames)
-            log.info("  %d/%d chunks · %s detections · %d calls",
-                     n, len(chunks), f"{total:,}", client.calls_made)
+            log.info("  %d/%d chunks on disk · %d calls · %d failed",
+                     n, len(chunks), client.calls_made, failed)
+    return paths
 
-    if not frames:
+
+def combine_chunks(paths: list[Path]) -> pd.DataFrame:
+    """Read the cached chunks back in one pass, dropping duplicates as we go.
+
+    Chunk boundaries overlap by a day at the edges, so the same detection can
+    appear twice.
+    """
+    seen = []
+    for path in paths:
+        if path.exists():
+            seen.append(pd.read_parquet(path))
+    if not seen:
         return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True).drop_duplicates()
+    return pd.concat(seen, ignore_index=True).drop_duplicates()
 
 
 def build_summary(fires: pd.DataFrame, calls: int, elapsed_min: float,
@@ -160,7 +181,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     start_time = time.time()
-    fires = fetch_all(client, BoundingBox(*INDIA_BBOX), args.start, args.end)
+    chunk_paths = fetch_all(client, BoundingBox(*INDIA_BBOX), args.start, args.end)
+    log.info("Combining %d cached chunks", len(chunk_paths))
+    fires = combine_chunks(chunk_paths)
     elapsed_min = (time.time() - start_time) / 60
 
     if fires.empty:

@@ -118,13 +118,17 @@ class FirmsClient:
         # A chunk with no fires returns just a header, which is a valid answer.
         return pd.read_csv(io.StringIO(text)) if text.strip() else pd.DataFrame()
 
+    def cache_path(self, start: date, days: int) -> Path:
+        """Where one chunk is cached. Named so callers can find it without refetching."""
+        return self.cache_dir / f"{self.source}__{start:%Y%m%d}_{days}d.parquet"
+
     def fetch_chunk(self, bbox: BoundingBox, start: date, days: int, refresh: bool = False) -> pd.DataFrame:
         """Fire detections in one box over at most 5 days."""
         self.require_key()
         if days > MAX_DAYS_PER_REQUEST:
             raise ValueError(f"FIRMS allows at most {MAX_DAYS_PER_REQUEST} days per request, got {days}")
 
-        cache_file = self.cache_dir / f"{self.source}__{start:%Y%m%d}_{days}d.parquet"
+        cache_file = self.cache_path(start, days)
         if cache_file.exists() and not refresh:
             return pd.read_parquet(cache_file)
 
