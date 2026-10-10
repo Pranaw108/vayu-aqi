@@ -77,6 +77,16 @@ EARLY_STOPPING = 40
 log = logging.getLogger("train")
 
 
+# The four things that can happen between now and the predicted hour. Reporting
+# one "episode" number hides which of them the model is actually good at.
+TRANSITIONS = {
+    "onset": "calm now, episode in {horizon}h",
+    "ongoing": "episode now, still an episode",
+    "decay": "episode now, calm by then",
+    "calm": "calm now, still calm",
+}
+
+
 @dataclass
 class FoldResult:
     fold: int
@@ -89,6 +99,7 @@ class FoldResult:
     interval_coverage: float = np.nan
     season_scores: dict[str, dict[str, float]] = field(default_factory=dict)
     episode_scores: dict[str, float] = field(default_factory=dict)
+    transition_scores: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 def summarise_stations(codes: pd.Series) -> str:
@@ -214,6 +225,29 @@ def run_fold(frame: pd.DataFrame, feature_names: list[str], fold: int,
             "n": int(mask.sum()),
         }
 
+    # Beating persistence during an episode can simply mean predicting decay.
+    # Forecasting the ONSET is the harder thing, and the thing the service needs.
+    current = test["baseline_persistence"].to_numpy(dtype=float)
+    is_episode_now = current >= EPISODE_THRESHOLD
+    is_episode_later = actual >= EPISODE_THRESHOLD
+    masks = {
+        "onset": ~is_episode_now & is_episode_later,
+        "ongoing": is_episode_now & is_episode_later,
+        "decay": is_episode_now & ~is_episode_later,
+        "calm": ~is_episode_now & ~is_episode_later,
+    }
+    for name, mask in masks.items():
+        if mask.sum() < 20:
+            continue
+        result.transition_scores[name] = {
+            "lightgbm": score(actual[mask], predictions[0.5][mask])["mae"],
+            "persistence": score(actual[mask], current[mask])["mae"],
+            "n": int(mask.sum()),
+            # Under-predicting an episode's size matters for a health warning.
+            "mean_actual": float(np.nanmean(actual[mask])),
+            "mean_predicted": float(np.nanmean(predictions[0.5][mask])),
+        }
+
     episode = actual >= EPISODE_THRESHOLD
     if episode.any():
         result.episode_scores = {
@@ -325,6 +359,57 @@ def build_summary(results: list[FoldResult], target: str, horizon: int, feature_
     else:
         lines.append("- No episode hours in the test folds.")
     lines.append("")
+
+    lines += [
+        "## What the model is actually good at",
+        "",
+        "One episode number hides a lot. Beating persistence *during* an episode can",
+        "just mean predicting decay; forecasting the **onset** is the hard part and the",
+        "part the service needs.",
+        "",
+        "| Transition | Rows | Persistence MAE | Model MAE | Skill | Mean actual | Mean predicted |",
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    transitions: dict[str, list[dict]] = {}
+    for r in results:
+        for name, s in r.transition_scores.items():
+            transitions.setdefault(name, []).append(s)
+    for name in TRANSITIONS:
+        entries = transitions.get(name)
+        if not entries:
+            continue
+        p = float(np.nanmean([e["persistence"] for e in entries]))
+        m = float(np.nanmean([e["lightgbm"] for e in entries]))
+        n = sum(e["n"] for e in entries)
+        actual_mean = float(np.nanmean([e["mean_actual"] for e in entries]))
+        predicted_mean = float(np.nanmean([e["mean_predicted"] for e in entries]))
+        label = TRANSITIONS[name].format(horizon=horizon)
+        lines.append(f"| **{name}** — {label} | {n:,} | {p:.1f} | {m:.1f} | {skill(m, p):+.1f}% "
+                     f"| {actual_mean:.1f} | {predicted_mean:.1f} |")
+    lines.append("")
+    if "calm" in transitions:
+        calm = transitions["calm"]
+        calm_skill = skill(float(np.nanmean([e["lightgbm"] for e in calm])),
+                           float(np.nanmean([e["persistence"] for e in calm])))
+        if calm_skill < 0:
+            lines += [
+                f"Note the **calm** row: on quiet days the model is {abs(calm_skill):.1f}% *worse*",
+                "than simply repeating the current value. That is a reasonable trade — accuracy",
+                "where it matters — but it points at serving persistence when conditions are calm",
+                "and stable, and the model when they are not.",
+                "",
+            ]
+    if "onset" in transitions:
+        onset = transitions["onset"]
+        actual_mean = float(np.nanmean([e["mean_actual"] for e in onset]))
+        predicted_mean = float(np.nanmean([e["mean_predicted"] for e in onset]))
+        if predicted_mean < actual_mean * 0.9:
+            lines += [
+                f"On onset hours the model predicts **{predicted_mean:.0f}** on average against an",
+                f"actual **{actual_mean:.0f}**. It detects that something is coming but understates",
+                "how bad, which matters for a health warning. Fire data is the missing cause.",
+                "",
+            ]
 
     lines += [
         "## What the model leans on",
