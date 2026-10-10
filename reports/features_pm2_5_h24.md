@@ -6,9 +6,9 @@ Generated 2026-10-10 by `pipeline/features.py`.
 - Training window starts: **2018-01-01**
 - Stations: **43**
 - Rows with a known answer: **2,128,147**
-- Features: **190**
+- Features: **140**
 - Rows with forecast weather: **100.0%**
-- Build time: **2.5 min**
+- Build time: **2.0 min**
 
 ## Persistence baseline
 
@@ -179,59 +179,9 @@ available ahead of time.
 | weekday | 100.0 |
 | is_weekend | 100.0 |
 | is_burning_season | 100.0 |
-| fire_count_0_100km | 100.0 |
-| fire_frp_0_100km | 100.0 |
+| fire_count_upwind | 100.0 |
 | fire_count_100_300km | 100.0 |
 | fire_frp_100_300km | 100.0 |
 | fire_count_300_500km | 100.0 |
-| fire_frp_300_500km | 100.0 |
-| fire_count_upwind_0_100km | 100.0 |
-| fire_frp_upwind_0_100km | 100.0 |
-| fire_count_upwind_100_300km | 100.0 |
-| fire_frp_upwind_100_300km | 100.0 |
-| fire_count_upwind_300_500km | 100.0 |
-| fire_frp_upwind_300_500km | 100.0 |
-| fire_count_upwind | 100.0 |
-| fire_frp_upwind | 100.0 |
-| fire_count_0_100km_d1 | 100.0 |
-| fire_count_0_100km_d2 | 100.0 |
-| fire_count_0_100km_d3 | 100.0 |
-| fire_frp_0_100km_d1 | 100.0 |
-| fire_frp_0_100km_d2 | 100.0 |
-| fire_frp_0_100km_d3 | 100.0 |
-| fire_count_100_300km_d1 | 100.0 |
-| fire_count_100_300km_d2 | 100.0 |
-| fire_count_100_300km_d3 | 100.0 |
-| fire_frp_100_300km_d1 | 100.0 |
-| fire_frp_100_300km_d2 | 100.0 |
-| fire_frp_100_300km_d3 | 100.0 |
-| fire_count_300_500km_d1 | 100.0 |
-| fire_count_300_500km_d2 | 100.0 |
-| fire_count_300_500km_d3 | 100.0 |
-| fire_frp_300_500km_d1 | 100.0 |
-| fire_frp_300_500km_d2 | 100.0 |
-| fire_frp_300_500km_d3 | 100.0 |
-| fire_count_upwind_0_100km_d1 | 100.0 |
-| fire_count_upwind_0_100km_d2 | 100.0 |
-| fire_count_upwind_0_100km_d3 | 100.0 |
-| fire_frp_upwind_0_100km_d1 | 100.0 |
-| fire_frp_upwind_0_100km_d2 | 100.0 |
-| fire_frp_upwind_0_100km_d3 | 100.0 |
-| fire_count_upwind_100_300km_d1 | 100.0 |
-| fire_count_upwind_100_300km_d2 | 100.0 |
-| fire_count_upwind_100_300km_d3 | 100.0 |
-| fire_frp_upwind_100_300km_d1 | 100.0 |
-| fire_frp_upwind_100_300km_d2 | 100.0 |
-| fire_frp_upwind_100_300km_d3 | 100.0 |
-| fire_count_upwind_300_500km_d1 | 100.0 |
-| fire_count_upwind_300_500km_d2 | 100.0 |
-| fire_count_upwind_300_500km_d3 | 100.0 |
-| fire_frp_upwind_300_500km_d1 | 100.0 |
-| fire_frp_upwind_300_500km_d2 | 100.0 |
-| fire_frp_upwind_300_500km_d3 | 100.0 |
 | fire_count_upwind_d1 | 100.0 |
-| fire_count_upwind_d2 | 100.0 |
-| fire_count_upwind_d3 | 100.0 |
-| fire_frp_upwind_d1 | 100.0 |
-| fire_frp_upwind_d2 | 100.0 |
-| fire_frp_upwind_d3 | 100.0 |
+| fire_count_100_300km_d1 | 100.0 |

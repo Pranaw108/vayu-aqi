@@ -56,6 +56,19 @@ INPUT_POLLUTANTS = ("pm2_5", "pm10", "no2", "so2", "nh3", "co", "o3")
 OBSERVED_WEATHER = ("at", "rh", "ws", "bp")
 FORECAST_WEATHER = ("temp_c", "humidity_pct", "wind_speed_ms", "pressure_hpa", "precip_mm", "boundary_layer_m")
 
+# The handful of fire columns that carry the signal, chosen from the full set's
+# own feature importance and its correlation with observed PM2.5. Offering all 56
+# at frozen hyperparameters cost 13 points of onset recall, so "all" is no longer
+# the default.
+CORE_FIRE_FEATURES = (
+    "fire_count_upwind",
+    "fire_count_100_300km",
+    "fire_frp_100_300km",
+    "fire_count_300_500km",
+    "fire_count_upwind_d1",
+    "fire_count_100_300km_d1",
+)
+
 # Below this share of rows, forecast weather is too thin to learn dispersion from.
 MIN_WEATHER_COVERAGE = 0.5
 
@@ -146,7 +159,8 @@ def add_calendar_features(frame: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
-def join_fire_features(frame: pd.DataFrame, data_dir: Path, horizon: int) -> pd.DataFrame:
+def join_fire_features(frame: pd.DataFrame, data_dir: Path, horizon: int,
+                       selection: str = "core") -> pd.DataFrame:
     """Attach per-station daily fire exposure.
 
     Joined on the CURRENT day, never the predicted day. A forecast made now can
@@ -161,6 +175,13 @@ def join_fire_features(frame: pd.DataFrame, data_dir: Path, horizon: int) -> pd.
 
     fires = pd.read_parquet(fire_path)
     fires = fires.rename(columns={"acq_date": "join_day"})
+
+    if selection == "none":
+        log.info("Fire features skipped (--fire-features none)")
+        return frame
+    if selection == "core":
+        keep = ["station_code", "join_day"] + [c for c in CORE_FIRE_FEATURES if c in fires.columns]
+        fires = fires[keep]
     frame["join_day"] = pd.to_datetime(frame["hour"]).dt.normalize()
 
     merged = frame.merge(fires, on=["station_code", "join_day"], how="left")
@@ -365,7 +386,7 @@ def leakage_check(frame: pd.DataFrame, target: str, horizon: int) -> list[str]:
 
 
 def build(con: duckdb.DuckDBPyConnection, data_dir: Path, target: str, horizon: int,
-          station_codes: list[str] | None) -> tuple[pd.DataFrame, list[str]]:
+          station_codes: list[str] | None, fire_selection: str = "core") -> tuple[pd.DataFrame, list[str]]:
     """Full feature table for one target and horizon."""
     frame = load_station_hours(con, data_dir, station_codes, horizon)
     if frame.empty:
@@ -377,7 +398,7 @@ def build(con: duckdb.DuckDBPyConnection, data_dir: Path, target: str, horizon: 
     frame = add_calendar_features(frame)
     frame = add_history_features(frame)
     frame = add_neighbour_features(frame, registry)
-    frame = join_fire_features(frame, data_dir, horizon)
+    frame = join_fire_features(frame, data_dir, horizon, fire_selection)
     frame = add_target(frame, target, horizon)
 
     # Rows with no known answer teach nothing.
@@ -463,6 +484,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "region. The first such run used AP01-AP08 and concluded weather does "
                         "not help, having tested it where inversions matter least.")
     p.add_argument("--seed", type=int, default=0, help="Sample seed, so a run can be repeated")
+    p.add_argument("--fire-features", choices=("core", "all", "none"), default="core",
+                   help="How many fire columns to include. 'all' (56) cost 13 points of onset "
+                        "recall against no fires at all; 'core' is the handful that carry signal")
     return p.parse_args(argv)
 
 
@@ -506,7 +530,7 @@ def main(argv: list[str] | None = None) -> int:
     con = duckdb.connect()
     log.info("Building features for %s at +%dh over %d stations", args.target, args.horizon, len(codes))
     start = time.time()
-    frame, dropped = build(con, args.data, args.target, args.horizon, codes)
+    frame, dropped = build(con, args.data, args.target, args.horizon, codes, args.fire_features)
     elapsed_min = (time.time() - start) / 60
 
     if frame.empty:
