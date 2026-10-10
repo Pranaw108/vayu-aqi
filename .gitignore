@@ -1,0 +1,24 @@
+# Raw and curated data never goes in git -- 6.5 GB of CSV would make the repo unusable.
+# Curated Parquet belongs in a Hugging Face Dataset repo instead.
+data/
+
+# Reports are generated, but we keep them: reviewers read them instead of re-running.
+!reports/
+
+# Secrets
+.env
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
