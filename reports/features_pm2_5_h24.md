@@ -6,9 +6,9 @@ Generated 2026-10-10 by `pipeline/features.py`.
 - Training window starts: **2018-01-01**
 - Stations: **43**
 - Rows with a known answer: **2,128,147**
-- Features: **134**
+- Features: **190**
 - Rows with forecast weather: **100.0%**
-- Build time: **2.8 min**
+- Build time: **3.5 min**
 
 ## Persistence baseline
 
@@ -47,16 +47,10 @@ available ahead of time.
 |---|---:|
 | at_lag24 | 68.9 |
 | at_lag1 | 69.0 |
-| bp_lag24 | 69.5 |
-| bp_lag1 | 69.5 |
-| ws_lag24 | 82.0 |
-| ws_lag1 | 82.0 |
-| wd_sin_lag24 | 84.1 |
-| wd_cos_lag24 | 84.1 |
-| wd_sin_lag1 | 84.1 |
-| wd_cos_lag1 | 84.1 |
-| rh_lag24 | 84.9 |
-| rh_lag1 | 85.0 |
+| bp_lag24 | 72.9 |
+| bp_lag1 | 73.0 |
+| ws_lag24 | 86.1 |
+| ws_lag1 | 86.1 |
 | nh3_lag168 | 87.0 |
 | nh3_lag48 | 87.1 |
 | nh3_lag24 | 87.2 |
@@ -65,10 +59,16 @@ available ahead of time.
 | nh3_lag3 | 87.2 |
 | nh3_lag2 | 87.2 |
 | nh3_lag1 | 87.2 |
+| wd_sin_lag24 | 88.2 |
+| wd_cos_lag24 | 88.2 |
+| wd_sin_lag1 | 88.2 |
+| wd_cos_lag1 | 88.2 |
 | nh3_mean6 | 88.3 |
 | nh3_std6 | 88.3 |
 | nh3_mean24 | 89.0 |
 | nh3_std24 | 89.0 |
+| rh_lag24 | 89.0 |
+| rh_lag1 | 89.0 |
 | nh3_mean168 | 89.7 |
 | nh3_std168 | 89.7 |
 | so2_lag168 | 89.7 |
@@ -179,3 +179,59 @@ available ahead of time.
 | weekday | 100.0 |
 | is_weekend | 100.0 |
 | is_burning_season | 100.0 |
+| fire_count_0_100km | 100.0 |
+| fire_frp_0_100km | 100.0 |
+| fire_count_100_300km | 100.0 |
+| fire_frp_100_300km | 100.0 |
+| fire_count_300_500km | 100.0 |
+| fire_frp_300_500km | 100.0 |
+| fire_count_upwind_0_100km | 100.0 |
+| fire_frp_upwind_0_100km | 100.0 |
+| fire_count_upwind_100_300km | 100.0 |
+| fire_frp_upwind_100_300km | 100.0 |
+| fire_count_upwind_300_500km | 100.0 |
+| fire_frp_upwind_300_500km | 100.0 |
+| fire_count_upwind | 100.0 |
+| fire_frp_upwind | 100.0 |
+| fire_count_0_100km_d1 | 100.0 |
+| fire_count_0_100km_d2 | 100.0 |
+| fire_count_0_100km_d3 | 100.0 |
+| fire_frp_0_100km_d1 | 100.0 |
+| fire_frp_0_100km_d2 | 100.0 |
+| fire_frp_0_100km_d3 | 100.0 |
+| fire_count_100_300km_d1 | 100.0 |
+| fire_count_100_300km_d2 | 100.0 |
+| fire_count_100_300km_d3 | 100.0 |
+| fire_frp_100_300km_d1 | 100.0 |
+| fire_frp_100_300km_d2 | 100.0 |
+| fire_frp_100_300km_d3 | 100.0 |
+| fire_count_300_500km_d1 | 100.0 |
+| fire_count_300_500km_d2 | 100.0 |
+| fire_count_300_500km_d3 | 100.0 |
+| fire_frp_300_500km_d1 | 100.0 |
+| fire_frp_300_500km_d2 | 100.0 |
+| fire_frp_300_500km_d3 | 100.0 |
+| fire_count_upwind_0_100km_d1 | 100.0 |
+| fire_count_upwind_0_100km_d2 | 100.0 |
+| fire_count_upwind_0_100km_d3 | 100.0 |
+| fire_frp_upwind_0_100km_d1 | 100.0 |
+| fire_frp_upwind_0_100km_d2 | 100.0 |
+| fire_frp_upwind_0_100km_d3 | 100.0 |
+| fire_count_upwind_100_300km_d1 | 100.0 |
+| fire_count_upwind_100_300km_d2 | 100.0 |
+| fire_count_upwind_100_300km_d3 | 100.0 |
+| fire_frp_upwind_100_300km_d1 | 100.0 |
+| fire_frp_upwind_100_300km_d2 | 100.0 |
+| fire_frp_upwind_100_300km_d3 | 100.0 |
+| fire_count_upwind_300_500km_d1 | 100.0 |
+| fire_count_upwind_300_500km_d2 | 100.0 |
+| fire_count_upwind_300_500km_d3 | 100.0 |
+| fire_frp_upwind_300_500km_d1 | 100.0 |
+| fire_frp_upwind_300_500km_d2 | 100.0 |
+| fire_frp_upwind_300_500km_d3 | 100.0 |
+| fire_count_upwind_d1 | 100.0 |
+| fire_count_upwind_d2 | 100.0 |
+| fire_count_upwind_d3 | 100.0 |
+| fire_frp_upwind_d1 | 100.0 |
+| fire_frp_upwind_d2 | 100.0 |
+| fire_frp_upwind_d3 | 100.0 |

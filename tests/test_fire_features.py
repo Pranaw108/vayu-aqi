@@ -210,9 +210,37 @@ def test_upwind_angle_is_a_cone_not_a_ray():
     assert not daily_upwind_fires(cells, links, wind).empty
 
 
-def test_closer_upwind_fires_weigh_more():
-    """Same FRP, different distance: the nearer fire must score higher."""
-    def exposure(lat, lon):
+def test_upwind_fires_are_reported_per_distance_band():
+    """No inverse-distance weighting, deliberately.
+
+    An earlier version weighted upwind fires by FRP / distance. Measured against
+    Delhi PM2.5 in October-November, fires within 100km correlate at about
+    r=-0.01 while fires at 100-300km reach r=+0.43 — so that weighting gave a
+    10km fire thirty times the influence of the Punjab fires that actually drive
+    the smoke. Bands let the model learn the distance response instead of having
+    my guess baked in.
+    """
+    near = pd.DataFrame({
+        "latitude": [29.0], "longitude": [77.3],
+        "acq_date": pd.to_datetime(["2024-11-05"]), "frp": [100.0],
+    })
+    cells = to_daily_grid(near)
+    links = station_cell_links(_stations(), cells)
+    bearing = float(links["bearing_deg"].iloc[0])
+    wind = pd.DataFrame({"station_code": ["DELHI"], "acq_date": pd.to_datetime(["2024-11-05"]),
+                         "wind_from_deg": [bearing]})
+    out = daily_upwind_fires(cells, links, wind)
+
+    # A nearby fire lands in the near band and nowhere else.
+    assert out["fire_frp_upwind_0_100km"].iloc[0] == 100.0
+    assert out.get("fire_frp_upwind_100_300km", pd.Series([0.0])).iloc[0] == 0.0
+    # The unbanded summary is still provided, unweighted.
+    assert out["fire_frp_upwind"].iloc[0] == 100.0
+
+
+def test_upwind_totals_are_raw_frp_not_distance_weighted():
+    """Two identical fires at different distances contribute the same FRP total."""
+    def total(lat, lon):
         cells = to_daily_grid(pd.DataFrame({
             "latitude": [lat], "longitude": [lon],
             "acq_date": pd.to_datetime(["2024-11-05"]), "frp": [100.0],
@@ -223,7 +251,7 @@ def test_closer_upwind_fires_weigh_more():
                              "wind_from_deg": [bearing]})
         return float(daily_upwind_fires(cells, links, wind)["fire_frp_upwind"].iloc[0])
 
-    assert exposure(29.2, 76.9) > exposure(PUNJAB[0], PUNJAB[1])
+    assert total(29.0, 76.9) == total(PUNJAB[0], PUNJAB[1]) == 100.0
 
 
 # ------------------------------------------------------------------ lags

@@ -28,6 +28,7 @@ from pipeline.features import (  # noqa: E402
     build,
     leakage_check,
     drop_quarantined_sensors,
+    join_fire_features,
     load_quarantine,
     warn_on_thin_weather,
     weather_coverage,
@@ -315,3 +316,50 @@ def test_only_the_proven_bad_column_is_dropped():
     assert out["rh"].isna().all()
     assert out["at"].notna().all()
     assert out["ws"].notna().all()
+
+
+# ----------------------------------------------------------------- fire join
+
+def test_fire_features_come_from_the_current_day_not_the_predicted_one(tmp_path):
+    """The leakage risk in the fire join.
+
+    A forecast made now can only know about fires already detected. Joining on
+    the predicted day would hand the model tomorrow's fires, which is the single
+    easiest way to make this model look brilliant and be useless.
+    """
+    (tmp_path / "fires").mkdir()
+    pd.DataFrame({
+        "station_code": ["DL01", "DL01"],
+        "acq_date": pd.to_datetime(["2024-11-05", "2024-11-06"]),
+        "fire_count_100_300km": [10.0, 999.0],   # 999 marks the predicted day
+    }).to_parquet(tmp_path / "fires" / "fire_features.parquet", index=False)
+
+    frame = pd.DataFrame({
+        "station_code": ["DL01"],
+        "hour": [pd.Timestamp("2024-11-05 10:00")],
+    })
+    out = join_fire_features(frame.copy(), tmp_path, horizon=24)
+    # The target hour falls on the 6th; its 999 must not appear.
+    assert out["fire_count_100_300km"].iloc[0] == 10.0
+
+
+def test_a_station_day_with_no_fires_becomes_zero_not_null(tmp_path):
+    (tmp_path / "fires").mkdir()
+    pd.DataFrame({
+        "station_code": ["DL01"],
+        "acq_date": pd.to_datetime(["2024-11-05"]),
+        "fire_count_100_300km": [10.0],
+    }).to_parquet(tmp_path / "fires" / "fire_features.parquet", index=False)
+
+    frame = pd.DataFrame({
+        "station_code": ["DL01"],
+        "hour": [pd.Timestamp("2024-07-01 10:00")],   # monsoon, no fires
+    })
+    out = join_fire_features(frame.copy(), tmp_path, horizon=24)
+    assert out["fire_count_100_300km"].iloc[0] == 0.0
+
+
+def test_missing_fire_file_leaves_the_frame_untouched(tmp_path):
+    frame = pd.DataFrame({"station_code": ["DL01"], "hour": [pd.Timestamp("2024-11-05")]})
+    out = join_fire_features(frame.copy(), tmp_path, horizon=24)
+    assert list(out.columns) == ["station_code", "hour"]

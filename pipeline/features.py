@@ -59,6 +59,12 @@ FORECAST_WEATHER = ("temp_c", "humidity_pct", "wind_speed_ms", "pressure_hpa", "
 # Below this share of rows, forecast weather is too thin to learn dispersion from.
 MIN_WEATHER_COVERAGE = 0.5
 
+# Fires are seasonal, so most rows legitimately have none. This threshold is
+# about whether the HISTORY has been fetched, not about how often fires burn:
+# a quarter of the archive downloaded looks identical to a quiet fire year
+# unless it is checked. The weather join taught this the hard way at 1.7%.
+MIN_FIRE_DAY_COVERAGE = 0.9
+
 # Stubble burning in Punjab and Haryana drives the worst north-Indian episodes.
 BURNING_SEASON_MONTHS = (10, 11)
 
@@ -138,6 +144,47 @@ def add_calendar_features(frame: pd.DataFrame) -> pd.DataFrame:
     frame["is_weekend"] = (hours.dt.weekday >= 5).astype("int8")
     frame["is_burning_season"] = hours.dt.month.isin(BURNING_SEASON_MONTHS).astype("int8")
     return frame
+
+
+def join_fire_features(frame: pd.DataFrame, data_dir: Path, horizon: int) -> pd.DataFrame:
+    """Attach per-station daily fire exposure.
+
+    Joined on the CURRENT day, never the predicted day. A forecast made now can
+    only know about fires already detected; fires on the target day have not
+    happened yet. The d1/d2/d3 columns reach further back, so every fire column
+    is history.
+    """
+    fire_path = data_dir / "fires" / "fire_features.parquet"
+    if not fire_path.exists():
+        log.warning("No fire features at %s — run pipeline/build_fire_features.py", fire_path)
+        return frame
+
+    fires = pd.read_parquet(fire_path)
+    fires = fires.rename(columns={"acq_date": "join_day"})
+    frame["join_day"] = pd.to_datetime(frame["hour"]).dt.normalize()
+
+    merged = frame.merge(fires, on=["station_code", "join_day"], how="left")
+    fire_columns = [c for c in merged.columns if c.startswith("fire_")]
+    merged[fire_columns] = merged[fire_columns].fillna(0.0)
+
+    # The question that matters is how much of the archive exists, not how often
+    # fires burn: a station-day with no fires is a real zero, but a station-day
+    # the fetch never reached is a fake one and looks the same.
+    fetched_days = set(fires["join_day"].unique())
+    needed_days = merged["join_day"].unique()
+    day_coverage = float(np.isin(needed_days, list(fetched_days)).mean()) if len(needed_days) else 0.0
+
+    non_zero = (merged[[c for c in fire_columns if not c.endswith(("_d1", "_d2", "_d3"))]].sum(axis=1) > 0).mean()
+    log.info("Fire features joined: %d columns · %.1f%% of days fetched · non-zero on %.1f%% of rows",
+             len(fire_columns), 100 * day_coverage, 100 * non_zero)
+    if day_coverage < MIN_FIRE_DAY_COVERAGE:
+        log.warning("=" * 72)
+        log.warning("Fire history covers only %.1f%% of the days in this feature table "
+                    "(want >=%.0f%%).", 100 * day_coverage, 100 * MIN_FIRE_DAY_COVERAGE)
+        log.warning("Unfetched days look exactly like days with no fires, so the model")
+        log.warning("would learn that fires rarely matter. Let fetch_fires.py finish.")
+        log.warning("=" * 72)
+    return merged.drop(columns=["join_day"])
 
 
 def load_quarantine(data_dir: Path) -> dict[str, dict]:
@@ -305,8 +352,9 @@ def leakage_check(frame: pd.DataFrame, target: str, horizon: int) -> list[str]:
         if column in allowed_exact:
             continue
         # fc_* is weather at the predicted hour (a forecast exists for it);
-        # wx_* is reanalysis at the current hour. Both are knowable.
-        if column.startswith(("fc_", "wx_")):
+        # wx_* is reanalysis at the current hour; fire_* is detections up to
+        # today. All three are knowable when the forecast is made.
+        if column.startswith(("fc_", "wx_", "fire_")):
             continue
         if column.endswith(allowed_suffixes):
             continue
@@ -329,6 +377,7 @@ def build(con: duckdb.DuckDBPyConnection, data_dir: Path, target: str, horizon: 
     frame = add_calendar_features(frame)
     frame = add_history_features(frame)
     frame = add_neighbour_features(frame, registry)
+    frame = join_fire_features(frame, data_dir, horizon)
     frame = add_target(frame, target, horizon)
 
     # Rows with no known answer teach nothing.

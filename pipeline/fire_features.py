@@ -162,16 +162,35 @@ def daily_upwind_fires(cells: pd.DataFrame, links: pd.DataFrame, wind: pd.DataFr
     angle = np.minimum(difference, 360 - difference)
     upwind = joined[angle <= UPWIND_HALF_ANGLE_DEGREES]
     if upwind.empty:
-        return pd.DataFrame(columns=["station_code", "acq_date", "fire_frp_upwind"])
+        return pd.DataFrame(columns=["station_code", "acq_date"])
 
-    # Closer upwind fires matter more, so weight by inverse distance.
-    weighted = upwind.assign(
-        weight=upwind["total_frp"] / np.maximum(upwind["distance_km"], 10.0)
+    # Upwind totals per distance band, with no inverse-distance weighting.
+    # An earlier version divided FRP by distance, which gave a 10km fire thirty
+    # times the weight of an equivalent fire 300km away — and measured against
+    # Delhi PM2.5, fires within 100km correlate at r=+0.04 while those at
+    # 100-300km reach +0.50. The weighting was emphasising the fires that do not
+    # matter. Bands let the model learn the distance response instead.
+    frames = []
+    for low, high in DISTANCE_BANDS:
+        band = upwind[(upwind["distance_km"] >= low) & (upwind["distance_km"] < high)]
+        if band.empty:
+            continue
+        label = band_label(low, high)
+        frames.append(
+            band.groupby(["station_code", "acq_date"], as_index=False)
+            .agg(**{f"fire_count_upwind_{label}": ("fire_count", "sum"),
+                    f"fire_frp_upwind_{label}": ("total_frp", "sum")})
+            .set_index(["station_code", "acq_date"])
+        )
+
+    # Kept as well, so the model can use a single summary if it prefers one.
+    totals = (
+        upwind.groupby(["station_code", "acq_date"], as_index=False)
+        .agg(fire_count_upwind=("fire_count", "sum"), fire_frp_upwind=("total_frp", "sum"))
+        .set_index(["station_code", "acq_date"])
     )
-    return (
-        weighted.groupby(["station_code", "acq_date"], as_index=False)
-        .agg(fire_frp_upwind=("weight", "sum"), fire_count_upwind=("fire_count", "sum"))
-    )
+    frames.append(totals)
+    return pd.concat(frames, axis=1).fillna(0.0).reset_index()
 
 
 def add_fire_lags(daily: pd.DataFrame) -> pd.DataFrame:
