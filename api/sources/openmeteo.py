@@ -53,8 +53,15 @@ WEATHER_VARIABLES = {
 }
 
 REQUEST_TIMEOUT_SECONDS = 90
-MAX_RETRIES = 4
-PAUSE_BETWEEN_CALLS_SECONDS = 0.4
+MAX_RETRIES = 5
+
+# Open-Meteo prices a request by how much data it returns, so a 7-year pull is
+# far more expensive than the plain call count suggests. A 0.4s pause still
+# earned HTTP 429 part-way through a 245-cell fetch.
+PAUSE_BETWEEN_CALLS_SECONDS = 2.0
+
+# A rate limit needs real backoff, not the few seconds a network blip needs.
+RATE_LIMIT_PAUSE_SECONDS = 90
 
 log = logging.getLogger("openmeteo")
 
@@ -116,7 +123,8 @@ class WeatherClient:
             except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as error:
                 if attempt == MAX_RETRIES:
                     raise
-                wait = 2**attempt
+                rate_limited = isinstance(error, urllib.error.HTTPError) and error.code == 429
+                wait = RATE_LIMIT_PAUSE_SECONDS if rate_limited else 2**attempt
                 log.warning("  %s — retry %d/%d in %ds", error, attempt, MAX_RETRIES, wait)
                 time.sleep(wait)
         raise RuntimeError("unreachable")

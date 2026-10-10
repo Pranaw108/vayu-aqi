@@ -128,6 +128,14 @@ Measured, not assumed — see `reports/` for the full numbers.
   sensor ceiling rather than a reading. Not excluded yet: one suspect station is not proof, and
   silently dropping a station is worse than showing it. Needs a station-level plausibility check
   against regional peers **before any ranking is published**.
+- **Seven stations' own weather sensors disagree with ERA5**, found by correlating each station's
+  thermometer against independent reanalysis (`reports/weather_summary.md`). Median correlation is
+  0.782, but UP14, WB09, AP08, WB12, UP09, BR08 and DL38 fall below 0.7. Checked individually, the
+  cause is the sensors rather than the coordinates: UP09 reports a maximum of 60 °C (India's record
+  is about 51) and sits 6.1 °C above reanalysis; BR08 tracks the daily cycle but its multi-year
+  spread is far too flat for Bihar's seasons. AP08 is separately mislabelled — an Andhra station
+  whose `city` reads "UPPCB", the *Uttar Pradesh* board. The grid join is therefore sound, but
+  those stations' own `at`/`rh` columns should not be trusted as model inputs.
 - **The terrain features in `stations.csv` are unexplained.** Until someone can say how they were
   derived, treat them as untrusted inputs to any model.
 
