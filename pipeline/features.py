@@ -22,6 +22,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 import time
@@ -119,6 +120,35 @@ def add_calendar_features(frame: pd.DataFrame) -> pd.DataFrame:
     frame["weekday"] = hours.dt.weekday
     frame["is_weekend"] = (hours.dt.weekday >= 5).astype("int8")
     frame["is_burning_season"] = hours.dt.month.isin(BURNING_SEASON_MONTHS).astype("int8")
+    return frame
+
+
+def load_quarantine(data_dir: Path) -> dict[str, dict]:
+    """Stations whose own weather sensor was shown to disagree with reanalysis."""
+    path = data_dir / "sensor_quarantine.json"
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8")).get("stations", {})
+
+
+def drop_quarantined_sensors(frame: pd.DataFrame, quarantined: dict[str, dict]) -> pd.DataFrame:
+    """Null the local weather columns for stations with a proven-bad sensor.
+
+    A station reporting 60 C does not just add noise — the model would learn a
+    relationship between a wrong temperature and real pollution. The rows stay,
+    because their pollutant readings are still good; only the weather goes.
+    """
+    if not quarantined:
+        return frame
+    affected = frame["station_code"].isin(quarantined)
+    if not affected.any():
+        return frame
+
+    columns = [c for c in (*OBSERVED_WEATHER, "wd") if c in frame.columns]
+    frame.loc[affected, columns] = np.nan
+    log.info("Dropped local weather for %d quarantined station(s) across %s rows: %s",
+             frame.loc[affected, "station_code"].nunique(), f"{int(affected.sum()):,}",
+             ", ".join(sorted(set(frame.loc[affected, "station_code"]))))
     return frame
 
 
@@ -269,6 +299,7 @@ def build(con: duckdb.DuckDBPyConnection, data_dir: Path, target: str, horizon: 
         return frame, []
 
     registry = pd.read_parquet(data_dir / "registry.parquet")
+    frame = drop_quarantined_sensors(frame, load_quarantine(data_dir))
     warn_on_thin_weather(frame)
     frame = add_calendar_features(frame)
     frame = add_history_features(frame)

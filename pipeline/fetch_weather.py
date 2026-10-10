@@ -24,6 +24,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 import time
@@ -116,6 +117,39 @@ def check_spatial_join(data_dir: Path, weather: pd.DataFrame, mapping: pd.DataFr
             "mean_temp_difference": round((merged["station_temp_c"] - merged["temp_c"]).mean(), 2),
         })
     return pd.DataFrame(rows)
+
+
+def write_quarantine(data_dir: Path, joined: pd.DataFrame) -> dict:
+    """List stations whose own weather sensor disagrees with reanalysis.
+
+    `features.py` reads this and drops those stations' local weather columns, so a
+    sensor reading 60 C cannot teach the model anything. Derived from the
+    measurement rather than hardcoded, so it updates whenever this script reruns.
+    """
+    quarantine = {
+        "generated": date.today().isoformat(),
+        "threshold": MIN_TEMPERATURE_CORRELATION,
+        "stations_checked": int(len(joined)),
+        "note": "Only stations with enough overlapping weather could be checked, so this is the "
+                "known-bad list, not a complete one.",
+        "stations": {},
+    }
+    if not joined.empty:
+        weak = joined[joined["temp_correlation"] < MIN_TEMPERATURE_CORRELATION]
+        quarantine["stations"] = {
+            row.station_code: {
+                "temp_correlation": float(row.temp_correlation),
+                "humidity_correlation": float(row.humidity_correlation),
+                "mean_temp_difference": float(row.mean_temp_difference),
+                "hours_compared": int(row.hours_compared),
+            }
+            for row in weak.itertuples()
+        }
+
+    path = data_dir / "sensor_quarantine.json"
+    path.write_text(json.dumps(quarantine, indent=2), encoding="utf-8")
+    log.info("Quarantined %d station weather sensors -> %s", len(quarantine["stations"]), path)
+    return quarantine
 
 
 def build_summary(weather: pd.DataFrame, mapping: pd.DataFrame, joined: pd.DataFrame,
@@ -217,6 +251,7 @@ def main(argv: list[str] | None = None) -> int:
 
     log.info("Checking the station-to-grid match against station-measured weather")
     joined = check_spatial_join(args.data, weather, mapping)
+    write_quarantine(args.data, joined)
 
     args.reports.mkdir(parents=True, exist_ok=True)
     summary = build_summary(weather, mapping, joined, client.calls_made, elapsed_min, args.start, args.end)

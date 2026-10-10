@@ -27,6 +27,8 @@ from pipeline.features import (  # noqa: E402
     add_target,
     build,
     leakage_check,
+    drop_quarantined_sensors,
+    load_quarantine,
     warn_on_thin_weather,
     weather_coverage,
 )
@@ -228,3 +230,40 @@ def test_good_weather_coverage_does_not_warn(caplog):
     with caplog.at_level("WARNING"):
         warn_on_thin_weather(frame)
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+# ----------------------------------------------------------------- sensor quarantine
+
+def test_quarantined_station_loses_its_local_weather():
+    """A proven-bad sensor must not reach the model at all."""
+    frame = pd.DataFrame({
+        "station_code": ["UP09", "UP09", "DL26"],
+        "hour": pd.date_range("2024-01-01", periods=3, freq="h"),
+        "at": [60.0, 59.0, 21.0],
+        "rh": [10.0, 11.0, 55.0],
+        "ws": [1.0, 1.1, 2.0],
+        "wd": [90.0, 95.0, 180.0],
+        "pm2_5": [100.0, 101.0, 102.0],
+    })
+    out = drop_quarantined_sensors(frame.copy(), {"UP09": {"temp_correlation": 0.41}})
+
+    bad = out[out["station_code"] == "UP09"]
+    assert bad[["at", "rh", "ws", "wd"]].isna().all().all()
+    # The pollutant readings are still good, so the rows stay.
+    assert bad["pm2_5"].notna().all()
+    # A healthy station is untouched.
+    good = out[out["station_code"] == "DL26"]
+    assert good["at"].iloc[0] == 21.0
+
+
+def test_no_quarantine_file_changes_nothing(tmp_path):
+    assert load_quarantine(tmp_path) == {}
+    frame = pd.DataFrame({"station_code": ["X"], "at": [25.0]})
+    assert drop_quarantined_sensors(frame.copy(), {})["at"].iloc[0] == 25.0
+
+
+def test_quarantine_file_is_read(tmp_path):
+    (tmp_path / "sensor_quarantine.json").write_text(
+        '{"stations": {"BR08": {"temp_correlation": 0.095}}}', encoding="utf-8"
+    )
+    assert "BR08" in load_quarantine(tmp_path)

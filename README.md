@@ -15,7 +15,9 @@ Full engineering plan: [Vayu Build Handbook](https://claude.ai/artifact/Kwm17iCN
 | 2 · AQI engine | AQ-02 cross-check vs labelled cities | done · r=0.940 |
 | 1 · Data foundation | DF-03 hourly table + DuckDB query layer | done · 15 tests pass |
 | 3 · Model | MD-01 feature engineering | next |
-| 3 · Model | MD-02..MD-04 baselines, LightGBM, backtest | not started |
+| 3 · Model | MD-02..MD-04 baselines, LightGBM, backtest | done · fails criteria, see below |
+| 3 · Model | Fire features from NASA FIRMS | built · needs a free MAP_KEY |
+| 3 · Model | Static location features | planned, see below |
 | 4 · Live + API + UI | LI, AP, FE, DP | not started |
 
 ## Layout
@@ -40,8 +42,24 @@ python pipeline/registry.py                 # ~1 second
 python pipeline/normalise.py --sample 5     # quick check, ~20 seconds
 python pipeline/normalise.py                # full run, ~10 minutes
 python pipeline/build_hourly.py             # hourly table, ~95 seconds
+python pipeline/fetch_weather.py            # ERA5 weather, free, ~2 hours
+python pipeline/features.py --horizon 24    # feature table
+python pipeline/train.py --horizon 24       # backtest + model
 python pipeline/validate_aqi.py             # AQI cross-check
-pytest tests/ -q                            # 72 tests
+pytest tests/ -q                            # 138 tests
+
+# Fire features need a free key from
+# https://firms.modaps.eosdis.nasa.gov/api/map_key/
+export FIRMS_MAP_KEY="your-key"
+```
+
+### Model status, stated plainly
+
+The first backtest **does not meet its acceptance criteria**: +8.9% skill against persistence
+where >=20% was the target, −2.5% on high-pollution episodes (worse than doing nothing), and an
+80% prediction band that covers only 74.6%. Root cause: forecast weather was present on 1.7% of
+rows because the feature table had been built against a test file. `features.py` now measures
+weather coverage and warns below 50%. Do not publish forecasts from this model.
 ```
 
 ### Reading the data
@@ -155,6 +173,28 @@ licences if that ever changed.
 
 If the station archive helps you, cite CPCB as the originating authority. For the city file,
 cite Rohan Rao's Kaggle dataset as well.
+
+## Planned: telling city stations apart
+
+ERA5 weather is a 25 km grid, so Delhi's 43 stations all receive identical weather and the
+model has no way to distinguish a roadside station from a residential one a few kilometres
+away. Station-level differences currently have to come from pollutant history alone.
+
+The fix is static per-station context, from free sources:
+
+| Feature | Source | Notes |
+|---|---|---|
+| Distance to nearest motorway / trunk / primary road | [OpenStreetMap Overpass API](https://overpass-api.de/) | Free, no key, rate-limited. Separates roadside from background stations |
+| Distance to industrial land use | OpenStreetMap (`landuse=industrial`) | Same query pass |
+| Population density | [GHSL](https://human-settlement.emergency.copernicus.eu/) or [WorldPop](https://www.worldpop.org/) | Free rasters, sampled at each station |
+| Built-up fraction within 1 km | GHSL | Proxy for local emissions density |
+
+Static, so they cost one lookup per station and never need refreshing. They would also give the
+model something to work with for KA06 and similar suspect stations — a station reading far above
+its city average may simply be roadside.
+
+Not yet built. It is the right step after fire data, because fires explain *when* pollution
+spikes regionally while these explain *why one station differs from its neighbour*.
 
 ## Non-negotiables
 
