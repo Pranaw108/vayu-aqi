@@ -8,7 +8,7 @@ Generated 2026-10-11 by `pipeline/features.py`.
 - Rows with a known answer: **2,128,871**
 - Features: **140**
 - Rows with forecast weather: **100.0%**
-- Build time: **4.2 min**
+- Build time: **3.2 min**
 
 ## Persistence baseline
 

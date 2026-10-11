@@ -23,6 +23,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from pipeline.features import (  # noqa: E402
     INPUT_POLLUTANTS,
     LAG_HOURS,
+    ThinDataError,
     add_history_features,
     add_target,
     build,
@@ -215,25 +216,6 @@ def test_weather_coverage_counts_rows_with_any_weather():
     assert weather_coverage(frame) == 0.5
 
 
-def test_thin_weather_is_warned_about(caplog):
-    """A near-empty weather join must be loud, not silent.
-
-    This is the bug it catches: a 1.7%-weather run trained and scored fine while
-    being autoregressive only, and nothing said so.
-    """
-    frame = pd.DataFrame({"fc_temp_c": [20.0] + [np.nan] * 99})
-    with caplog.at_level("WARNING"):
-        coverage = warn_on_thin_weather(frame)
-    assert coverage == pytest.approx(0.01)
-    assert any("autoregressive" in record.message for record in caplog.records)
-
-
-def test_good_weather_coverage_does_not_warn(caplog):
-    frame = pd.DataFrame({"fc_temp_c": [20.0] * 90 + [np.nan] * 10})
-    with caplog.at_level("WARNING"):
-        warn_on_thin_weather(frame)
-    assert not [r for r in caplog.records if r.levelname == "WARNING"]
-
 
 # ----------------------------------------------------------------- sensor quarantine
 
@@ -338,7 +320,8 @@ def test_fire_features_come_from_the_current_day_not_the_predicted_one(tmp_path)
         "station_code": ["DL01"],
         "hour": [pd.Timestamp("2024-11-05 10:00")],
     })
-    out = join_fire_features(frame.copy(), tmp_path, horizon=24)
+    # allow_thin because this fixture is two rows; the guard is tested separately.
+    out = join_fire_features(frame.copy(), tmp_path, horizon=24, selection="core", allow_thin=True)
     # The target hour falls on the 6th; its 999 must not appear.
     assert out["fire_count_100_300km"].iloc[0] == 10.0
 
@@ -355,11 +338,66 @@ def test_a_station_day_with_no_fires_becomes_zero_not_null(tmp_path):
         "station_code": ["DL01"],
         "hour": [pd.Timestamp("2024-07-01 10:00")],   # monsoon, no fires
     })
-    out = join_fire_features(frame.copy(), tmp_path, horizon=24)
+    out = join_fire_features(frame.copy(), tmp_path, horizon=24, selection="core", allow_thin=True)
     assert out["fire_count_100_300km"].iloc[0] == 0.0
 
 
 def test_missing_fire_file_leaves_the_frame_untouched(tmp_path):
     frame = pd.DataFrame({"station_code": ["DL01"], "hour": [pd.Timestamp("2024-11-05")]})
-    out = join_fire_features(frame.copy(), tmp_path, horizon=24)
+    out = join_fire_features(frame.copy(), tmp_path, horizon=24, selection="core")
     assert list(out.columns) == ["station_code", "hour"]
+
+
+# ----------------------------------------------------------------- fail-fast
+
+def test_thin_weather_refuses_rather_than_warning():
+    """These were warnings, and a warning in a long job is not a guard.
+
+    127 minutes were spent training on 22% fire coverage after a warning said
+    not to, so the pipeline now refuses.
+    """
+    frame = pd.DataFrame({"fc_temp_c": [20.0] + [np.nan] * 99})
+    with pytest.raises(ThinDataError, match="autoregressive"):
+        warn_on_thin_weather(frame)
+
+
+def test_thin_weather_can_be_overridden_explicitly():
+    frame = pd.DataFrame({"fc_temp_c": [20.0] + [np.nan] * 99})
+    assert warn_on_thin_weather(frame, allow_thin=True) == pytest.approx(0.01)
+
+
+def test_good_weather_coverage_passes_without_the_override():
+    frame = pd.DataFrame({"fc_temp_c": [20.0] * 90 + [np.nan] * 10})
+    assert warn_on_thin_weather(frame) == pytest.approx(0.9)
+
+
+def test_thin_fire_history_refuses(tmp_path):
+    """Only one of the two needed days was ever fetched."""
+    (tmp_path / "fires").mkdir()
+    pd.DataFrame({
+        "station_code": ["DL01"],
+        "acq_date": pd.to_datetime(["2024-11-05"]),
+        "fire_count_100_300km": [10.0],
+    }).to_parquet(tmp_path / "fires" / "fire_features.parquet", index=False)
+
+    frame = pd.DataFrame({
+        "station_code": ["DL01", "DL01"],
+        "hour": pd.to_datetime(["2024-11-05 10:00", "2024-06-01 10:00"]),
+    })
+    with pytest.raises(ThinDataError, match="Fire history"):
+        join_fire_features(frame.copy(), tmp_path, horizon=24, selection="core")
+
+
+def test_thin_fire_history_can_be_overridden(tmp_path):
+    (tmp_path / "fires").mkdir()
+    pd.DataFrame({
+        "station_code": ["DL01"],
+        "acq_date": pd.to_datetime(["2024-11-05"]),
+        "fire_count_100_300km": [10.0],
+    }).to_parquet(tmp_path / "fires" / "fire_features.parquet", index=False)
+    frame = pd.DataFrame({
+        "station_code": ["DL01", "DL01"],
+        "hour": pd.to_datetime(["2024-11-05 10:00", "2024-06-01 10:00"]),
+    })
+    out = join_fire_features(frame.copy(), tmp_path, horizon=24, selection="core", allow_thin=True)
+    assert len(out) == 2

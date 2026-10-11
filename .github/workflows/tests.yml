@@ -1,0 +1,42 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # The data is 3 GB and gitignored, so tests that need it skip themselves.
+      # Everything that encodes a rule — the AQI formula, leakage guards, the
+      # sensor verdicts, the selection-bias lesson — runs here.
+      - name: Run tests
+        run: pytest tests/ -q --durations=10
+
+      - name: Check the guards still refuse bad input
+        run: |
+          python - <<'PY'
+          import sys; sys.path.insert(0, ".")
+          import pandas as pd, numpy as np
+          from pipeline.features import ThinDataError, warn_on_thin_weather
+          try:
+              warn_on_thin_weather(pd.DataFrame({"fc_temp_c": [20.0] + [np.nan] * 99}))
+          except ThinDataError:
+              print("OK: thin weather is refused")
+          else:
+              sys.exit("FAIL: thin weather was accepted")
+          PY

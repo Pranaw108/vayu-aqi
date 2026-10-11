@@ -84,6 +84,15 @@ BURNING_SEASON_MONTHS = (10, 11)
 log = logging.getLogger("features")
 
 
+class ThinDataError(RuntimeError):
+    """Raised when an input is too incomplete to train on.
+
+    These used to be warnings. A warning in a long background job is not a
+    guard: 127 minutes were spent training on 22% fire coverage after a warning
+    said not to.
+    """
+
+
 def load_station_hours(con: duckdb.DuckDBPyConnection, data_dir: Path,
                        station_codes: list[str] | None, horizon: int = 24) -> pd.DataFrame:
     """Hourly readings joined to weather, twice, at two different times.
@@ -160,7 +169,7 @@ def add_calendar_features(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def join_fire_features(frame: pd.DataFrame, data_dir: Path, horizon: int,
-                       selection: str = "core") -> pd.DataFrame:
+                       selection: str = "none", allow_thin: bool = False) -> pd.DataFrame:
     """Attach per-station daily fire exposure.
 
     Joined on the CURRENT day, never the predicted day. A forecast made now can
@@ -198,13 +207,16 @@ def join_fire_features(frame: pd.DataFrame, data_dir: Path, horizon: int,
     non_zero = (merged[[c for c in fire_columns if not c.endswith(("_d1", "_d2", "_d3"))]].sum(axis=1) > 0).mean()
     log.info("Fire features joined: %d columns · %.1f%% of days fetched · non-zero on %.1f%% of rows",
              len(fire_columns), 100 * day_coverage, 100 * non_zero)
+    if day_coverage < MIN_FIRE_DAY_COVERAGE and not allow_thin:
+        raise ThinDataError(
+            f"Fire history covers only {100 * day_coverage:.1f}% of the days in this feature "
+            f"table (need >={100 * MIN_FIRE_DAY_COVERAGE:.0f}%). Unfetched days look exactly "
+            f"like days with no fires, so the model would learn that fires rarely matter. "
+            f"Let pipeline/fetch_fires.py finish, or pass --allow-thin-data to build anyway."
+        )
     if day_coverage < MIN_FIRE_DAY_COVERAGE:
-        log.warning("=" * 72)
-        log.warning("Fire history covers only %.1f%% of the days in this feature table "
-                    "(want >=%.0f%%).", 100 * day_coverage, 100 * MIN_FIRE_DAY_COVERAGE)
-        log.warning("Unfetched days look exactly like days with no fires, so the model")
-        log.warning("would learn that fires rarely matter. Let fetch_fires.py finish.")
-        log.warning("=" * 72)
+        log.warning("Fire coverage is only %.1f%% and --allow-thin-data was given. "
+                    "This table is for inspection, not training.", 100 * day_coverage)
     return merged.drop(columns=["join_day"])
 
 
@@ -250,7 +262,17 @@ def weather_coverage(frame: pd.DataFrame) -> float:
     return float(frame[present].notna().any(axis=1).mean())
 
 
-def warn_on_thin_weather(frame: pd.DataFrame) -> float:
+def drop_constant_numeric_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """Remove zero-variance signals that add noise and can trigger invalid correlation math."""
+    numeric = frame.select_dtypes(include=[np.number])
+    constant = [column for column in numeric.columns if numeric[column].nunique(dropna=True) <= 1]
+    if not constant:
+        return frame
+    log.info("Dropping constant numeric columns before model build: %s", ", ".join(constant))
+    return frame.drop(columns=constant)
+
+
+def warn_on_thin_weather(frame: pd.DataFrame, allow_thin: bool = False) -> float:
     """Say loudly when weather is mostly missing.
 
     A model built this way is autoregressive only: it has no way to know that
@@ -258,13 +280,16 @@ def warn_on_thin_weather(frame: pd.DataFrame) -> float:
     still trains and still scores, so without this warning the gap is invisible.
     """
     coverage = weather_coverage(frame)
+    if coverage < MIN_WEATHER_COVERAGE and not allow_thin:
+        raise ThinDataError(
+            f"Forecast weather present on only {100 * coverage:.1f}% of rows "
+            f"(need >={100 * MIN_WEATHER_COVERAGE:.0f}%). The model would be autoregressive "
+            f"only and could not learn dispersion. Run pipeline/fetch_weather.py to "
+            f"completion, or pass --allow-thin-data to build anyway."
+        )
     if coverage < MIN_WEATHER_COVERAGE:
-        log.warning("=" * 72)
-        log.warning("Forecast weather present on only %.1f%% of rows (want >=%.0f%%).",
-                    100 * coverage, 100 * MIN_WEATHER_COVERAGE)
-        log.warning("The model will be autoregressive only and will not learn dispersion.")
-        log.warning("Run pipeline/fetch_weather.py to completion first.")
-        log.warning("=" * 72)
+        log.warning("Weather coverage is only %.1f%% and --allow-thin-data was given. "
+                    "This table is for inspection, not training.", 100 * coverage)
     else:
         log.info("Forecast weather present on %.1f%% of rows", 100 * coverage)
     return coverage
@@ -386,7 +411,8 @@ def leakage_check(frame: pd.DataFrame, target: str, horizon: int) -> list[str]:
 
 
 def build(con: duckdb.DuckDBPyConnection, data_dir: Path, target: str, horizon: int,
-          station_codes: list[str] | None, fire_selection: str = "core") -> tuple[pd.DataFrame, list[str]]:
+          station_codes: list[str] | None, fire_selection: str = "none",
+          allow_thin: bool = False) -> tuple[pd.DataFrame, list[str]]:
     """Full feature table for one target and horizon."""
     frame = load_station_hours(con, data_dir, station_codes, horizon)
     if frame.empty:
@@ -394,11 +420,11 @@ def build(con: duckdb.DuckDBPyConnection, data_dir: Path, target: str, horizon: 
 
     registry = pd.read_parquet(data_dir / "registry.parquet")
     frame = drop_quarantined_sensors(frame, load_quarantine(data_dir))
-    warn_on_thin_weather(frame)
+    warn_on_thin_weather(frame, allow_thin)
     frame = add_calendar_features(frame)
     frame = add_history_features(frame)
     frame = add_neighbour_features(frame, registry)
-    frame = join_fire_features(frame, data_dir, horizon, fire_selection)
+    frame = join_fire_features(frame, data_dir, horizon, fire_selection, allow_thin)
     frame = add_target(frame, target, horizon)
 
     # Rows with no known answer teach nothing.
@@ -407,6 +433,7 @@ def build(con: duckdb.DuckDBPyConnection, data_dir: Path, target: str, horizon: 
     # Drop the raw current-hour columns the model must never see.
     suspect = leakage_check(frame, target, horizon)
     frame = frame.drop(columns=suspect)
+    frame = drop_constant_numeric_columns(frame)
     return frame, suspect
 
 
@@ -484,9 +511,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "region. The first such run used AP01-AP08 and concluded weather does "
                         "not help, having tested it where inversions matter least.")
     p.add_argument("--seed", type=int, default=0, help="Sample seed, so a run can be repeated")
-    p.add_argument("--fire-features", choices=("core", "all", "none"), default="core",
-                   help="How many fire columns to include. 'all' (56) cost 13 points of onset "
-                        "recall against no fires at all; 'core' is the handful that carry signal")
+    p.add_argument("--allow-thin-data", action="store_true",
+                   help="Build even when weather or fire coverage is too low. For inspecting a "
+                        "partial table, never for training")
+    p.add_argument("--fire-features", choices=("core", "all", "none"), default="none",
+                   help="Fire columns to include. Default none: measured against a matched "
+                        "baseline, fires moved average precision by -0.007 at +6h and +0.006 "
+                        "at +24h, so they do not earn their place. 'core' and 'all' are kept "
+                        "for revisiting other horizons or regions")
     return p.parse_args(argv)
 
 
@@ -530,7 +562,12 @@ def main(argv: list[str] | None = None) -> int:
     con = duckdb.connect()
     log.info("Building features for %s at +%dh over %d stations", args.target, args.horizon, len(codes))
     start = time.time()
-    frame, dropped = build(con, args.data, args.target, args.horizon, codes, args.fire_features)
+    try:
+        frame, dropped = build(con, args.data, args.target, args.horizon, codes,
+                               args.fire_features, args.allow_thin_data)
+    except ThinDataError as error:
+        log.error("Refusing to build: %s", error)
+        return 3
     elapsed_min = (time.time() - start) / 60
 
     if frame.empty:
