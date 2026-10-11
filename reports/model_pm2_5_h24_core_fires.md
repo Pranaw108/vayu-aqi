@@ -1,12 +1,12 @@
 # Forecast model — pm2_5, +24h (MD-03, MD-04)
 
-Generated 2026-10-10 by `pipeline/train.py`.
+Generated 2026-10-11 by `pipeline/train.py`.
 
 - Target: **pm2_5**, **24** hours ahead
 - Stations: **43** · features: **140**
 - Station codes: `DL01..DL43 (43 stations)`
 - Rolling-origin folds: **3**, 30 test days each
-- Runtime: **26.8 min**
+- Runtime: **41.9 min**
 
 ## Headline
 
